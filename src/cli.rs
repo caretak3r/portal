@@ -129,16 +129,16 @@ pub fn run() -> Result<()> {
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
-fn cmd_no_subcommand(_paths: &PortalPaths) -> Result<()> {
+#[allow(clippy::unnecessary_wraps, clippy::needless_return, unused_variables)]
+fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
     #[cfg(feature = "tui-ratatui")]
     {
-        return portal::tui::run(_paths);
+        return portal::tui::run(paths);
     }
 
     #[cfg(feature = "tui-ftui")]
     {
-        return portal::tui::run(_paths);
+        return portal::tui::run(paths);
     }
 
     #[cfg(not(any(feature = "tui-ratatui", feature = "tui-ftui")))]
