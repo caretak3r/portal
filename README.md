@@ -6,6 +6,8 @@ Configuration profile manager for Claude Code. Save, switch, diff, and restore `
 portal save work-redteam       # snapshot current .claude/ as a profile
 portal load personal-webdev    # atomic swap to a different profile
 portal diff work-redteam personal-webdev   # see what differs
+portal export work-redteam     # portable archive for sharing
+portal import work-redteam.portal.tar.zst  # import from archive
 portal undo                    # restore from automatic backup
 portal                         # launch the TUI browser
 ```
@@ -36,12 +38,16 @@ portal diff <A> [B]     Diff two profiles (B defaults to skeleton)
 portal rm <NAME>        Delete a profile
 portal reset            Reset .claude/ to skeleton (bare minimum)
 portal undo             Restore from the last automatic backup
-portal status           Show active profile and state
+portal status           Show active profile, integrity, and state
 portal rename OLD NEW   Rename a profile
 portal verify [NAME]    Check profile integrity (SHA-256 checksums)
+portal verify --fix-plugins   Verify and reinstall failed plugins
+portal export <NAME>    Export a profile to a portable .tar.zst archive
+portal import <PATH>    Import a profile from an archive
+portal recover          Recover from a crashed swap (.claude.portal-old)
 ```
 
-**Flags:** `--dry-run`, `--no-plugins`, `--force`, `-v`, `-q`
+**Flags:** `--dry-run`, `--no-plugins`, `--no-backup`, `--force`, `-v`, `-q`
 
 ## TUI
 
@@ -157,6 +163,74 @@ compression_level = 3
 [plugins]
 reinstall_timeout_secs = 30
 ```
+
+## Implementation Status
+
+### Core Engine
+
+- [x] Project scaffold, security config (`deny.toml`, `clippy.toml`, `unsafe_code = "forbid"`)
+- [x] Data model types (`ProfileManifest`, `PortalState`, `PluginBlueprint`, etc.)
+- [x] Path resolution (`PortalPaths` with `detect()` and `with_home()` for testing)
+- [x] Storage layer (manifest, state, meta, plugins_manifest read/write)
+- [x] SHA-256 checksum engine with file and manifest verification
+- [x] Skeleton creation and verification
+- [x] Snapshot engine (save with exclusion patterns, 22 excluded paths)
+- [x] Plugin blueprint extraction from `settings.json`
+- [x] Plugin reinstallation (`claude plugin install`, GitHub clone, local path)
+- [x] tar.zst backup engine (create, restore, prune)
+- [x] Pre-flight safety checks (Claude running, profile exists, disk state)
+- [x] File locking with 300s stale timeout
+- [x] Atomic swap loader (10-step pipeline with rollback)
+- [x] 4-level diff engine (manifest, tree, content via `similar`, plugins)
+- [x] Export/import profiles as portable `.tar.zst` archives
+- [x] Crash recovery (`portal recover`)
+- [x] Config file support (`portal.config.toml` with defaults)
+
+### CLI
+
+- [x] `save` with interactive prompts, overwrite/merge choice, dry-run
+- [x] `load` with atomic swap, backup, plugin reinstall
+- [x] `list`, `show`, `diff`, `rm`, `reset`, `undo`
+- [x] `status` with integrity check and plugin health
+- [x] `rename` with state update
+- [x] `verify` with `--fix-plugins`
+- [x] `export` / `import`
+- [x] `recover`
+- [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
+
+### TUI (two competing implementations)
+
+**Ratatui** (`tui/ratatui` branch, `--features tui-ratatui`):
+- [x] Split-pane layout (profile list + detail)
+- [x] Collapsible folder tree with `j/k` navigation
+- [x] Save dialog, load/delete confirmation modals
+- [x] Help overlay
+- [ ] Diff mode (right pane shows actual diff)
+- [ ] Content diff view (inline unified diff with hunk navigation)
+- [ ] Rich load confirmation (file add/remove/modify counts)
+
+**FrankenTUI** (`tui/ftui` branch, `--features tui-ftui`):
+- [x] Elm-style `Model` trait architecture (`Msg` enum + `Cmd` returns)
+- [x] Split-pane layout with custom color palette
+- [x] Save dialog (name + description), load/delete confirmation modals
+- [x] Help overlay, status bar
+- [ ] Tags field in save dialog
+- [ ] Diff mode
+- [ ] Content diff view
+- [ ] Collapsible folder tree
+
+### Testing
+
+- [x] 50 integration tests (save, load, diff, backup, checksum, skeleton, safety, transport, CLI)
+- [ ] TUI snapshot testing
+- [ ] Property tests (never-lose-data invariant)
+- [ ] Plugin install/reinstall tests (require `claude` binary)
+
+### Release
+
+- [ ] Homebrew formula
+- [ ] Cargo publish
+- [ ] CI/CD (GitHub Actions)
 
 ## License
 
