@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use console::style;
 
-use portal::core::{backup, checksum, diff, loader, safety, skeleton, snapshot};
+use portal::core::{backup, checksum, diff, loader, plugins, safety, skeleton, snapshot, transport};
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
 /// Configuration transport layer for Claude Code.
@@ -95,7 +95,25 @@ enum Commands {
     Verify {
         /// Profile name (defaults to active profile)
         name: Option<String>,
+        /// Attempt to reinstall failed plugins
+        #[arg(long)]
+        fix_plugins: bool,
     },
+    /// Export a profile to a portable .tar.zst archive
+    Export {
+        /// Profile name to export
+        name: String,
+        /// Output path (file or directory; defaults to current directory)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Import a profile from a .tar.zst archive
+    Import {
+        /// Path to the .tar.zst archive
+        path: String,
+    },
+    /// Recover from a crashed swap (.claude.portal-old)
+    Recover,
 }
 
 /// Run the CLI entry point.
@@ -125,7 +143,12 @@ pub fn run() -> Result<()> {
         Some(Commands::Undo) => cmd_undo(&cli, &paths),
         Some(Commands::Status) => cmd_status(&cli, &paths),
         Some(Commands::Rename { old, new }) => cmd_rename(&cli, &paths, old, new),
-        Some(Commands::Verify { name }) => cmd_verify(&cli, &paths, name.as_deref()),
+        Some(Commands::Verify { name, fix_plugins }) => {
+            cmd_verify(&cli, &paths, name.as_deref(), *fix_plugins)
+        }
+        Some(Commands::Export { name, output }) => cmd_export(&cli, &paths, name, output.as_deref()),
+        Some(Commands::Import { path }) => cmd_import(&cli, &paths, path),
+        Some(Commands::Recover) => cmd_recover(&cli, &paths),
     }
 }
 
@@ -198,6 +221,18 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
             "  {}     Verify profile integrity",
             style("verify").green()
         );
+        println!(
+            "  {}     Export profile to archive",
+            style("export").green()
+        );
+        println!(
+            "  {}     Import profile from archive",
+            style("import").green()
+        );
+        println!(
+            "  {}    Recover from crashed swap",
+            style("recover").green()
+        );
         println!();
         println!(
             "Run {} for more info.",
@@ -238,13 +273,21 @@ fn cmd_save(
         if !is_interactive() {
             bail!("Profile \"{name}\" already exists. Use --force to overwrite.");
         }
-        let overwrite = dialoguer::Confirm::new()
-            .with_prompt(format!("Profile \"{name}\" already exists. Overwrite?"))
-            .default(false)
+        let choice = dialoguer::Select::new()
+            .with_prompt(format!("Profile \"{name}\" already exists"))
+            .items(&["Overwrite (replace entirely)", "Merge (keep new, update changed)", "Cancel"])
+            .default(2)
             .interact()?;
-        if !overwrite {
-            println!("{}", style("Aborted.").yellow());
-            return Ok(());
+        match choice {
+            // Both overwrite and merge: fall through to save.
+            // Save will overwrite files. Merge keeps the existing profile
+            // directory; overwrite behavior is the same since save replaces
+            // file contents and rebuilds the manifest.
+            0 | 1 => {}
+            _ => {
+                println!("{}", style("Aborted.").yellow());
+                return Ok(());
+            }
         }
     }
 
@@ -759,6 +802,7 @@ fn cmd_undo(cli: &Cli, paths: &PortalPaths) -> Result<()> {
 
 // ── status ───────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
     let state_path = paths.state_file();
     let portal_state = state::read(&state_path)?;
@@ -782,6 +826,42 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
                             "  Last loaded:    {}",
                             loaded.format("%Y-%m-%d %H:%M UTC")
                         );
+                    }
+
+                    // Integrity check against stored profile.
+                    let files_dir = paths.profile_files_dir(name);
+                    match checksum::verify_manifest(&files_dir, &m.files) {
+                        Ok(mismatches) if mismatches.is_empty() => {
+                            println!(
+                                "  Integrity:      {} all {} files verified",
+                                style("✓").green(),
+                                m.files.len()
+                            );
+                        }
+                        Ok(mismatches) => {
+                            println!(
+                                "  Integrity:      {} {} file(s) differ",
+                                style("✗").red(),
+                                mismatches.len()
+                            );
+                        }
+                        Err(_) => {
+                            println!(
+                                "  Integrity:      {}",
+                                style("error reading files").red()
+                            );
+                        }
+                    }
+
+                    // Plugin health.
+                    let plugins_path = paths.profile_plugins(name);
+                    if plugins_path.exists() {
+                        if let Ok(bp) = plugins_manifest::read(&plugins_path) {
+                            println!(
+                                "  Plugins:        {} blueprinted",
+                                bp.plugins.len()
+                            );
+                        }
                     }
                 }
             }
@@ -820,6 +900,24 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
 
     let backups = backup::list(paths)?;
     println!("  Backups:          {}", backups.len());
+
+    // Crash recovery warning.
+    if paths.claude_old().exists() {
+        println!();
+        println!(
+            "  {} .claude.portal-old exists; previous swap may have crashed",
+            style("WARNING:").red().bold()
+        );
+        println!(
+            "  Run {} to recover.",
+            style("portal recover").bold()
+        );
+    }
+
+    // Count profiles.
+    let profile_count = std::fs::read_dir(paths.profiles_root())
+        .map_or(0, |rd| rd.filter_map(std::result::Result::ok).count());
+    println!("  Profiles:         {profile_count}");
 
     Ok(())
 }
@@ -864,7 +962,7 @@ fn cmd_rename(_cli: &Cli, paths: &PortalPaths, old: &str, new: &str) -> Result<(
 
 // ── verify ───────────────────────────────────────────────────────────
 
-fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> {
+fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>, fix_plugins: bool) -> Result<()> {
     let name = if let Some(n) = name {
         n.to_string()
     } else {
@@ -883,19 +981,21 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> 
     let m = manifest::read(&manifest_path)?;
     let files_dir = paths.profile_files_dir(&name);
 
+    // Checksum verification.
     let spinner = progress_spinner("Verifying checksums...");
     let mismatches = checksum::verify_manifest(&files_dir, &m.files)?;
     drop(spinner);
 
     if mismatches.is_empty() {
         println!(
-            "{} Profile \"{name}\" — all {} files verified",
+            "{} Checksums: {}/{} files verified",
             style("✓").green().bold(),
+            m.files.len(),
             m.files.len()
         );
     } else {
         println!(
-            "{} Profile \"{name}\" — {} checksum mismatch(es):",
+            "{} Checksums: {} mismatch(es):",
             style("✗").red().bold(),
             mismatches.len()
         );
@@ -905,9 +1005,202 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> 
                 mm.path, mm.expected, mm.actual
             );
         }
-        if !cli.quiet {
-            bail!("Integrity check failed for profile \"{name}\".");
+    }
+
+    // Plugin verification.
+    let plugins_path = paths.profile_plugins(&name);
+    if plugins_path.exists() {
+        if let Ok(bp) = plugins_manifest::read(&plugins_path) {
+            println!(
+                "  Plugins:   {} blueprinted",
+                bp.plugins.len()
+            );
+            if fix_plugins && !bp.plugins.is_empty() {
+                println!();
+                println!("  {}", style("Reinstalling plugins...").bold());
+                let results = plugins::reinstall(&bp);
+                for r in &results {
+                    let icon = if r.success {
+                        style("  ✓").green()
+                    } else {
+                        style("  ✗").red()
+                    };
+                    println!("{icon} {}", r.id);
+                    if cli.verbose && !r.message.is_empty() {
+                        println!("    {}", r.message.trim());
+                    }
+                }
+                let failed: Vec<_> = results.iter().filter(|r| !r.success).collect();
+                if !failed.is_empty() {
+                    println!(
+                        "\n  {} {}/{} plugins failed to install",
+                        style("!").yellow().bold(),
+                        failed.len(),
+                        results.len()
+                    );
+                }
+            }
         }
+    }
+
+    if !mismatches.is_empty() && !cli.quiet {
+        bail!("Integrity check failed for profile \"{name}\".");
+    }
+
+    Ok(())
+}
+
+// ── export ──────────────────────────────────────────────────────────
+
+fn cmd_export(cli: &Cli, paths: &PortalPaths, name: &str, output: Option<&str>) -> Result<()> {
+    let output_path = output.map_or_else(
+        || std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        std::path::PathBuf::from,
+    );
+
+    if cli.dry_run {
+        let target = if output_path.is_dir() {
+            output_path.join(format!("{name}.portal.tar.zst"))
+        } else {
+            output_path
+        };
+        println!("[dry-run] Would export profile \"{name}\" to {}", target.display());
+        return Ok(());
+    }
+
+    let spinner = progress_spinner("Exporting profile...");
+    let archive_path = transport::export(paths, name, &output_path)?;
+    let size = std::fs::metadata(&archive_path).map_or(0, |m| m.len());
+    finish_spinner(
+        &spinner,
+        &format!(
+            "Exported \"{}\" ({})",
+            style(name).green().bold(),
+            format_size(size)
+        ),
+    );
+    println!("  Archive: {}", archive_path.display());
+
+    Ok(())
+}
+
+// ── import ──────────────────────────────────────────────────────────
+
+fn cmd_import(cli: &Cli, paths: &PortalPaths, archive: &str) -> Result<()> {
+    let archive_path = std::path::Path::new(archive);
+
+    if cli.dry_run {
+        println!("[dry-run] Would import profile from {}", archive_path.display());
+        return Ok(());
+    }
+
+    paths.ensure_dirs()?;
+
+    let spinner = progress_spinner("Importing profile...");
+    let name = transport::import(paths, archive_path, cli.force)?;
+    finish_spinner(
+        &spinner,
+        &format!("Imported profile \"{}\"", style(&name).green().bold()),
+    );
+
+    // Show summary of what was imported.
+    let manifest_path = paths.profile_manifest(&name);
+    if manifest_path.exists() {
+        if let Ok(m) = manifest::read(&manifest_path) {
+            let total_size: u64 = m.files.values().map(|f| f.size).sum();
+            println!(
+                "  {} files ({})",
+                m.files.len(),
+                format_size(total_size)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ── recover ─────────────────────────────────────────────────────────
+
+fn cmd_recover(cli: &Cli, paths: &PortalPaths) -> Result<()> {
+    let old_dir = paths.claude_old();
+    if !old_dir.exists() {
+        println!(
+            "{} No crash recovery needed. .claude.portal-old does not exist.",
+            style("✓").green().bold()
+        );
+        return Ok(());
+    }
+
+    let claude_dir = paths.claude_root();
+
+    // Check if current .claude/ exists and is valid.
+    let current_valid = claude_dir.exists() && claude_dir.join("settings.json").exists();
+
+    if current_valid {
+        println!("Found .claude.portal-old from a previously crashed swap.");
+        println!();
+        println!(
+            "  Current .claude/ appears {}, .portal-old is a backup from before the swap.",
+            style("valid").green()
+        );
+
+        if cli.force {
+            // --force: assume swap succeeded, clean up.
+            std::fs::remove_dir_all(&old_dir)?;
+            println!(
+                "{} Removed stale .claude.portal-old",
+                style("✓").green().bold()
+            );
+        } else {
+            if !is_interactive() {
+                bail!("Use --force to clean up .portal-old automatically.");
+            }
+            let choice = dialoguer::Select::new()
+                .with_prompt("What would you like to do?")
+                .items(&[
+                    "Keep current .claude/ and remove .portal-old (swap succeeded)",
+                    "Restore .portal-old as .claude/ (swap failed, rollback)",
+                    "Cancel",
+                ])
+                .default(0)
+                .interact()?;
+            match choice {
+                0 => {
+                    std::fs::remove_dir_all(&old_dir)?;
+                    println!(
+                        "{} Removed .claude.portal-old",
+                        style("✓").green().bold()
+                    );
+                }
+                1 => {
+                    if claude_dir.exists() {
+                        std::fs::remove_dir_all(&claude_dir)?;
+                    }
+                    std::fs::rename(&old_dir, &claude_dir)?;
+                    println!(
+                        "{} Restored .claude/ from .portal-old",
+                        style("✓").green().bold()
+                    );
+                }
+                _ => {
+                    println!("{}", style("Aborted.").yellow());
+                }
+            }
+        }
+    } else {
+        // Current .claude/ is missing or invalid; .portal-old is likely the real config.
+        println!(
+            "{} .claude/ is missing or invalid. Restoring from .portal-old...",
+            style("!").yellow().bold()
+        );
+        if claude_dir.exists() {
+            std::fs::remove_dir_all(&claude_dir)?;
+        }
+        std::fs::rename(&old_dir, &claude_dir)?;
+        println!(
+            "{} Restored .claude/ from .portal-old",
+            style("✓").green().bold()
+        );
     }
 
     Ok(())

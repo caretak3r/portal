@@ -184,3 +184,42 @@ fn test_cli_diff_nonexistent() {
         .failure()
         .stderr(predicate::str::contains("not found"));
 }
+
+#[test]
+fn test_cli_export_nonexistent() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+
+    portal_cmd()
+        .env("HOME", tmp.path())
+        .args(["export", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_cli_import_nonexistent_archive() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+
+    portal_cmd()
+        .env("HOME", tmp.path())
+        .args(["import", "/tmp/does-not-exist.tar.zst"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+fn test_cli_recover_no_crash() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(tmp.path().join(".portal")).expect("mkdir");
+
+    portal_cmd()
+        .env("HOME", tmp.path())
+        .arg("recover")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No crash recovery needed"));
+}
