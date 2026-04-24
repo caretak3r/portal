@@ -27,7 +27,7 @@ impl PortalPaths {
 
     #[must_use]
     pub fn portal_root(&self) -> PathBuf {
-        self.home.join(".portal")
+        self.home.join(".config/portal")
     }
 
     #[must_use]

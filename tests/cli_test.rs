@@ -48,9 +48,9 @@ fn test_cli_list_empty() {
 #[test]
 fn test_cli_status_empty() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir profiles");
-    std::fs::create_dir_all(tmp.path().join(".portal/backups")).expect("mkdir backups");
-    std::fs::create_dir_all(tmp.path().join(".portal/skeleton")).expect("mkdir skeleton");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir profiles");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/backups")).expect("mkdir backups");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/skeleton")).expect("mkdir skeleton");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -64,7 +64,7 @@ fn test_cli_status_empty() {
 #[test]
 fn test_cli_rm_nonexistent() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -77,7 +77,7 @@ fn test_cli_rm_nonexistent() {
 #[test]
 fn test_cli_show_nonexistent() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -90,7 +90,7 @@ fn test_cli_show_nonexistent() {
 #[test]
 fn test_cli_verify_no_active() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -103,7 +103,7 @@ fn test_cli_verify_no_active() {
 #[test]
 fn test_cli_rename_nonexistent() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -116,9 +116,9 @@ fn test_cli_rename_nonexistent() {
 #[test]
 fn test_cli_reset_force() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/backups")).expect("mkdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/skeleton")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/backups")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/skeleton")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -135,7 +135,7 @@ fn test_cli_reset_force() {
 #[test]
 fn test_cli_save_requires_name_noninteractive() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal")).expect("mkdir");
     std::fs::create_dir_all(tmp.path().join(".claude")).expect("mkdir");
     std::fs::write(tmp.path().join(".claude/settings.json"), "{}").expect("write");
 
@@ -162,7 +162,7 @@ fn test_cli_load_no_backup_requires_force() {
 #[test]
 fn test_cli_undo_nothing() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -175,7 +175,7 @@ fn test_cli_undo_nothing() {
 #[test]
 fn test_cli_diff_nonexistent() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -188,7 +188,7 @@ fn test_cli_diff_nonexistent() {
 #[test]
 fn test_cli_export_nonexistent() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -201,7 +201,7 @@ fn test_cli_export_nonexistent() {
 #[test]
 fn test_cli_import_nonexistent_archive() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal/profiles")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal/profiles")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())
@@ -214,7 +214,7 @@ fn test_cli_import_nonexistent_archive() {
 #[test]
 fn test_cli_recover_no_crash() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::create_dir_all(tmp.path().join(".portal")).expect("mkdir");
+    std::fs::create_dir_all(tmp.path().join(".config/portal")).expect("mkdir");
 
     portal_cmd()
         .env("HOME", tmp.path())

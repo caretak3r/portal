@@ -85,7 +85,7 @@ Running `portal` without arguments opens a split-pane terminal browser.
 
 ### Profiles
 
-A profile is a snapshot of `~/.claude/` stored in `~/.portal/profiles/<name>/`. It contains the actual files, a manifest (`portal.json`) with SHA-256 checksums for every tracked file, a plugin blueprint (`plugins.json`), and metadata.
+A profile is a snapshot of `~/.claude/` stored in `~/.config/portal/profiles/<name>/`. It contains the actual files, a manifest (`portal.json`) with SHA-256 checksums for every tracked file, a plugin blueprint (`plugins.json`), and metadata.
 
 Ephemeral directories (`sessions/`, `todos/`, `telemetry/`, `history.jsonl`, etc.) are excluded. Plugin code is not copied; instead, Portal records which plugins are installed and reinstalls them from source on load.
 
@@ -135,7 +135,7 @@ Run `portal undo` to restore from the most recent backup.
 ## Storage Layout
 
 ```
-~/.portal/
+~/.config/portal/
   profiles/
     work-redteam/
       portal.json        # manifest with file checksums
@@ -152,7 +152,7 @@ Run `portal undo` to restore from the most recent backup.
 
 ## Configuration
 
-Optional. Create `~/.portal/portal.config.toml`:
+Optional. Create `~/.config/portal/portal.config.toml`:
 
 ```toml
 [backup]
