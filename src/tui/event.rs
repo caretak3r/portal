@@ -34,6 +34,7 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
         View::Detail | View::Diff => handle_main(app, key.code),
         View::SaveDialog => handle_save_dialog(app, key.code),
         View::LoadConfirm => handle_load_confirm(app, key.code),
+        View::CloneDialog => handle_clone_dialog(app, key.code),
         View::Help => handle_help(app, key.code),
     }
 
@@ -107,6 +108,16 @@ fn handle_main(app: &mut App, code: KeyCode) {
             app.save_field_index = 0;
             app.view = View::SaveDialog;
         }
+        KeyCode::Char('c') if app.selected_profile().is_some() => {
+            app.clone_name.clear();
+            app.clone_categories = crate::core::clone::Category::all()
+                .into_iter()
+                .map(|c| (c, true))
+                .collect();
+            app.clone_fresh_md = false;
+            app.clone_field_index = 0;
+            app.view = View::CloneDialog;
+        }
         KeyCode::Esc => {
             app.file_scroll = 0;
             app.view = View::Detail;
@@ -154,6 +165,84 @@ fn handle_help(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('?' | 'q') => app.view = View::Detail,
         _ => {}
     }
+}
+
+fn handle_clone_dialog(app: &mut App, code: KeyCode) {
+    // Field layout: 0 = name, 1..=N = category toggles, N+1 = fresh CLAUDE.md
+    let num_cats = app.clone_categories.len();
+    let max_field = num_cats + 1; // 0=name, 1..num_cats=categories, num_cats+1=fresh_md
+
+    match code {
+        KeyCode::Esc => app.view = View::Detail,
+        KeyCode::Tab | KeyCode::Down => {
+            app.clone_field_index = (app.clone_field_index + 1) % (max_field + 1);
+        }
+        KeyCode::BackTab | KeyCode::Up => {
+            app.clone_field_index = if app.clone_field_index == 0 {
+                max_field
+            } else {
+                app.clone_field_index - 1
+            };
+        }
+        KeyCode::Char(' ') if app.clone_field_index >= 1 && app.clone_field_index <= num_cats => {
+            let idx = app.clone_field_index - 1;
+            app.clone_categories[idx].1 = !app.clone_categories[idx].1;
+        }
+        KeyCode::Char(' ') if app.clone_field_index == max_field => {
+            app.clone_fresh_md = !app.clone_fresh_md;
+        }
+        KeyCode::Backspace if app.clone_field_index == 0 => {
+            app.clone_name.pop();
+        }
+        KeyCode::Char(c) if app.clone_field_index == 0 => {
+            app.clone_name.push(c);
+        }
+        KeyCode::Enter => execute_clone(app),
+        _ => {}
+    }
+}
+
+fn execute_clone(app: &mut App) {
+    let target = app.clone_name.trim().to_string();
+    if target.is_empty() {
+        app.status_message = Some("Clone name cannot be empty.".to_string());
+        return;
+    }
+
+    let Some(source_name) = app.selected_profile().map(|p| p.name.clone()) else {
+        return;
+    };
+
+    let only: Vec<crate::core::clone::Category> = app
+        .clone_categories
+        .iter()
+        .filter(|(_, enabled)| *enabled)
+        .map(|(cat, _)| *cat)
+        .collect();
+
+    let opts = crate::core::clone::CloneOptions {
+        source: &source_name,
+        target: &target,
+        description: "",
+        only: Some(only),
+        without: None,
+        fresh_claude_md: app.clone_fresh_md,
+    };
+
+    match crate::core::clone::clone_profile(&app.paths, &opts) {
+        Ok(result) => {
+            app.status_message = Some(format!(
+                "Cloned \"{}\" -> \"{}\" ({} files)",
+                source_name, target, result.files_cloned
+            ));
+            let _ = app.refresh();
+            app.rebuild_tree();
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Clone failed: {e}"));
+        }
+    }
+    app.view = View::Detail;
 }
 
 fn move_selection(app: &mut App, delta: isize) {

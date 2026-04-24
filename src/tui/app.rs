@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use ratatui::widgets::ListState;
 
+use crate::core::clone::Category;
 use crate::core::profile::{PluginBlueprint, ProfileManifest, ProfileMeta};
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest, state};
 
@@ -13,6 +14,7 @@ pub enum View {
     Diff,
     SaveDialog,
     LoadConfirm,
+    CloneDialog,
     Help,
 }
 
@@ -209,6 +211,13 @@ pub struct App {
     pub status_message: Option<String>,
     pub file_scroll: u16,
 
+    // Clone dialog fields
+    pub clone_name: String,
+    pub clone_categories: Vec<(Category, bool)>,
+    pub clone_fresh_md: bool,
+    /// 0 = name field, 1..=9 = category toggles, 10 = fresh CLAUDE.md toggle
+    pub clone_field_index: usize,
+
     // Detail pane tree state
     pub expanded_dirs: HashSet<String>,
     pub detail_cursor: usize,
@@ -241,6 +250,10 @@ impl App {
             save_field_index: 0,
             status_message: None,
             file_scroll: 0,
+            clone_name: String::new(),
+            clone_categories: Category::all().into_iter().map(|c| (c, true)).collect(),
+            clone_fresh_md: false,
+            clone_field_index: 0,
             expanded_dirs: HashSet::new(),
             detail_cursor: 0,
             file_tree: Vec::new(),
