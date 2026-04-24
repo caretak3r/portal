@@ -62,12 +62,12 @@ fn render_profile_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Detail ");
-
     let Some(profile) = app.selected_profile() else {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Detail ");
         let empty = Paragraph::new("No profiles found. Press 's' to save current config.")
             .block(block);
         frame.render_widget(empty, area);
@@ -77,91 +77,180 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let m = &profile.manifest;
     let label = Style::default().fg(Color::Cyan);
     let active_style = Style::default().fg(Color::Green).bold();
+    let dim = Style::default().fg(Color::DarkGray);
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
+    // Split the right pane: metadata header + file tree + keybindings footer
+    let [header_area, tree_area, footer_area] = Layout::vertical([
+        Constraint::Length(8),
+        Constraint::Min(4),
+        Constraint::Length(3),
+    ])
+    .areas(area);
 
-    // Name with active indicator
+    // ── Header: profile metadata ──
     let name_style = if app.is_active(&profile.name) {
         active_style
     } else {
         Style::default().bold()
     };
-    lines.push(Line::from(vec![
-        Span::styled("Name: ", label),
-        Span::styled(m.name.clone(), name_style),
-    ]));
+    let active_tag = if app.is_active(&profile.name) { " ● active" } else { "" };
 
-    // Description
-    lines.push(Line::from(vec![
-        Span::styled("Desc: ", label),
-        Span::raw(&m.description),
-    ]));
-
-    // Tags
+    let mut header_lines: Vec<Line<'_>> = vec![
+        Line::from(vec![
+            Span::styled(&m.name, name_style),
+            Span::styled(active_tag, Style::default().fg(Color::Green)),
+        ]),
+    ];
+    if !m.description.is_empty() {
+        header_lines.push(Line::from(vec![
+            Span::styled("  ", dim),
+            Span::raw(&m.description),
+        ]));
+    }
     if !m.tags.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("Tags: ", label),
+        header_lines.push(Line::from(vec![
+            Span::styled("  tags: ", dim),
             Span::raw(m.tags.join(", ")),
         ]));
     }
-
-    // Created
-    lines.push(Line::from(vec![
-        Span::styled("Created: ", label),
-        Span::raw(m.created_at.format("%Y-%m-%d %H:%M").to_string()),
+    let created = m.created_at.format("%Y-%m-%d").to_string();
+    let loaded_str = m.last_loaded.map_or_else(
+        || "never".to_string(),
+        |ll| ll.format("%Y-%m-%d %H:%M").to_string(),
+    );
+    header_lines.push(Line::from(vec![
+        Span::styled("  created ", dim),
+        Span::raw(&created),
+        Span::styled("  loaded ", dim),
+        Span::raw(&loaded_str),
+        Span::styled(format!("  ({} loads)", m.load_count), dim),
     ]));
 
-    // Last loaded
-    if let Some(ref last) = m.last_loaded {
-        lines.push(Line::from(vec![
-            Span::styled("Loaded:  ", label),
-            Span::raw(last.format("%Y-%m-%d %H:%M").to_string()),
-        ]));
-    }
-
-    // Load count
-    lines.push(Line::from(vec![
-        Span::styled("Loads:   ", label),
-        Span::raw(m.load_count.to_string()),
-    ]));
-
-    lines.push(Line::from(""));
-
-    // Files
-    let file_count = m.files.len();
-    let total_size: u64 = m.files.values().map(|f| f.size).sum();
-    lines.push(Line::from(vec![
-        Span::styled("Files: ", label),
-        Span::raw(format!("{file_count} ({total_size} bytes)")),
-    ]));
-
-    let mut sorted_files: Vec<_> = m.files.iter().collect();
-    sorted_files.sort_by_key(|(k, _)| k.as_str());
-    for (path, entry) in &sorted_files {
-        lines.push(Line::from(format!("  {path}  ({} B)", entry.size)));
-    }
-
-    // Plugins
+    // Plugin summary line
     if let Some(ref bp) = profile.blueprint {
         if !bp.plugins.is_empty() {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Plugins: ", label),
-                Span::raw(bp.plugins.len().to_string()),
+            let plugin_names: Vec<&str> = bp.plugins.iter().map(|p| p.id.as_str()).collect();
+            header_lines.push(Line::from(""));
+            header_lines.push(Line::from(vec![
+                Span::styled("  plugins: ", label),
+                Span::raw(plugin_names.join(", ")),
             ]));
-            for plugin in &bp.plugins {
-                let status = if plugin.enabled { "+" } else { "-" };
-                lines.push(Line::from(format!("  [{status}] {}", plugin.id)));
-            }
         }
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((app.file_scroll, 0));
+    let total_size: u64 = m.files.values().map(|f| f.size).sum();
+    header_lines.push(Line::from(""));
+    header_lines.push(Line::from(vec![
+        Span::styled("  Files ", label),
+        Span::raw(format!("{} files, {}", m.files.len(), fmt_bytes(total_size))),
+    ]));
 
-    frame.render_widget(paragraph, area);
+    let header = Paragraph::new(header_lines)
+        .block(Block::default().borders(Borders::TOP | Borders::LEFT | Borders::RIGHT).title(format!(" {} ", profile.name)));
+    frame.render_widget(header, header_area);
+
+    // ── File tree ──
+    let tree_block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT);
+
+    let inner = tree_block.inner(tree_area);
+    frame.render_widget(tree_block, tree_area);
+
+    let visible_height = inner.height as usize;
+
+    // Compute scroll offset to keep cursor visible
+    let scroll_offset = if app.detail_cursor >= visible_height {
+        app.detail_cursor - visible_height + 1
+    } else {
+        0
+    };
+
+    let rows = &app.tree_rows;
+    for (i, row) in rows.iter().enumerate().skip(scroll_offset).take(visible_height) {
+        #[allow(clippy::cast_possible_truncation)]
+        let y = inner.y + (i - scroll_offset) as u16;
+        if y >= inner.y + inner.height {
+            break;
+        }
+
+        let indent = "  ".repeat(row.depth);
+        let is_selected = i == app.detail_cursor;
+
+        let row_style = if is_selected {
+            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+
+        let icon_style = if row.is_dir {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        let name_span = if row.is_dir {
+            Span::styled(&row.label, icon_style.add_modifier(Modifier::BOLD))
+        } else {
+            Span::styled(format!("  {}", row.label), Style::default())
+        };
+
+        let size_span = Span::styled(
+            format!("  {}", row.size_label),
+            Style::default().fg(Color::DarkGray),
+        );
+
+        let line = Line::from(vec![
+            Span::raw(indent),
+            name_span,
+            size_span,
+        ]);
+
+        let line_area = ratatui::layout::Rect::new(inner.x, y, inner.width, 1);
+        let para = Paragraph::new(line).style(row_style);
+        frame.render_widget(para, line_area);
+    }
+
+    // Scroll indicator
+    if rows.len() > visible_height {
+        let pct = if rows.is_empty() { 0 } else { (app.detail_cursor * 100) / rows.len() };
+        let indicator = Paragraph::new(format!(" {pct}%"))
+            .style(dim)
+            .alignment(ratatui::layout::Alignment::Right);
+        let ind_area = ratatui::layout::Rect::new(
+            inner.x, inner.y + inner.height.saturating_sub(1), inner.width, 1
+        );
+        frame.render_widget(indicator, ind_area);
+    }
+
+    // ── Footer: keybinding hints ──
+    let hint = Style::default().fg(Color::Yellow);
+    let footer_lines = vec![
+        Line::from(vec![
+            Span::styled(" j/k", hint), Span::raw(" navigate  "),
+            Span::styled("Enter", hint), Span::raw(" expand/collapse  "),
+            Span::styled("l", hint), Span::raw(" load"),
+        ]),
+        Line::from(vec![
+            Span::styled(" Tab", hint), Span::raw(" next profile  "),
+            Span::styled("d", hint), Span::raw(" diff  "),
+            Span::styled("s", hint), Span::raw(" save  "),
+            Span::styled("?", hint), Span::raw(" help"),
+        ]),
+    ];
+    let footer = Paragraph::new(footer_lines)
+        .block(Block::default().borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT));
+    frame.render_widget(footer, footer_area);
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn fmt_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes}B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 fn render_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -351,42 +440,22 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
     let hint = Style::default().fg(Color::Yellow);
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled("j/Down  ", hint),
-            Span::raw("next profile"),
-        ]),
-        Line::from(vec![
-            Span::styled("k/Up    ", hint),
-            Span::raw("previous profile"),
-        ]),
-        Line::from(vec![
-            Span::styled("Enter   ", hint),
-            Span::raw("load selected profile"),
-        ]),
-        Line::from(vec![
-            Span::styled("d       ", hint),
-            Span::raw("diff selected vs active"),
-        ]),
-        Line::from(vec![
-            Span::styled("s       ", hint),
-            Span::raw("save current config as profile"),
-        ]),
-        Line::from(vec![
-            Span::styled("Esc     ", hint),
-            Span::raw("back / cancel"),
-        ]),
-        Line::from(vec![
-            Span::styled("?       ", hint),
-            Span::raw("toggle help"),
-        ]),
-        Line::from(vec![
-            Span::styled("q       ", hint),
-            Span::raw("quit"),
-        ]),
-        Line::from(vec![
-            Span::styled("Ctrl+C  ", hint),
-            Span::raw("force quit"),
-        ]),
+        Line::from(""),
+        Line::styled(" File Tree", Style::default().bold()),
+        Line::from(vec![Span::styled("  j/k     ", hint), Span::raw("navigate files")]),
+        Line::from(vec![Span::styled("  Enter   ", hint), Span::raw("expand/collapse folder")]),
+        Line::from(""),
+        Line::styled(" Profiles", Style::default().bold()),
+        Line::from(vec![Span::styled("  Tab     ", hint), Span::raw("next profile")]),
+        Line::from(vec![Span::styled("  S-Tab   ", hint), Span::raw("previous profile")]),
+        Line::from(vec![Span::styled("  l       ", hint), Span::raw("load selected profile")]),
+        Line::from(""),
+        Line::styled(" Actions", Style::default().bold()),
+        Line::from(vec![Span::styled("  d       ", hint), Span::raw("diff selected vs active")]),
+        Line::from(vec![Span::styled("  s       ", hint), Span::raw("save current config")]),
+        Line::from(vec![Span::styled("  Esc     ", hint), Span::raw("back / cancel")]),
+        Line::from(vec![Span::styled("  ?       ", hint), Span::raw("toggle help")]),
+        Line::from(vec![Span::styled("  q       ", hint), Span::raw("quit")]),
     ];
 
     let paragraph = Paragraph::new(lines).block(block);

@@ -44,9 +44,52 @@ fn handle_main(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.view = View::Help,
-        KeyCode::Down | KeyCode::Char('j') => move_selection(app, 1),
-        KeyCode::Up | KeyCode::Char('k') => move_selection(app, -1),
+
+        // Profile list navigation (left pane)
+        KeyCode::Down | KeyCode::Char('j') if app.view == View::Diff => {
+            app.file_scroll = app.file_scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') if app.view == View::Diff => {
+            app.file_scroll = app.file_scroll.saturating_sub(1);
+        }
+
+        // Detail view: j/k moves tree cursor, Tab switches to profile nav
+        KeyCode::Down | KeyCode::Char('j') if app.view == View::Detail => {
+            app.move_detail_cursor(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') if app.view == View::Detail => {
+            app.move_detail_cursor(-1);
+        }
+
+        // Tab cycles between profile list nav and detail tree nav
+        KeyCode::Tab => {
+            // Move to next profile (like old j/k behavior)
+            move_selection(app, 1);
+        }
+        KeyCode::BackTab => {
+            move_selection(app, -1);
+        }
+
+        // Enter in detail view: toggle folder expand/collapse
+        // Enter in other views: load confirmation
+        KeyCode::Enter if app.view == View::Detail => {
+            // If cursor is on a directory row, toggle it.
+            // If cursor is on a file or above the tree, open load confirm.
+            let on_dir = app
+                .tree_rows
+                .get(app.detail_cursor)
+                .is_some_and(|r| r.is_dir);
+            if on_dir {
+                app.toggle_expand();
+            } else if app.selected_profile().is_some() {
+                app.view = View::LoadConfirm;
+            }
+        }
         KeyCode::Enter if app.selected_profile().is_some() => {
+            app.view = View::LoadConfirm;
+        }
+
+        KeyCode::Char('l') if app.view == View::Detail && app.selected_profile().is_some() => {
             app.view = View::LoadConfirm;
         }
         KeyCode::Char('d') => {
@@ -126,6 +169,8 @@ fn move_selection(app: &mut App, delta: isize) {
     };
     app.list_state.select(Some(next));
     app.file_scroll = 0;
+    // Switching profiles rebuilds the file tree
+    app.rebuild_tree();
 }
 
 #[allow(clippy::missing_const_for_fn)] // match on runtime index
