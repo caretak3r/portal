@@ -218,9 +218,9 @@ reinstall_timeout_secs = 30
 - [x] New profile dialog (`n`) with Empty/CloneFrom mode toggle
 - [x] Mutual exclusivity: CLAUDE.md category vs "Start with empty CLAUDE.md"
 - [x] Help overlay
-- [ ] Diff mode (right pane shows actual diff)
-- [ ] Content diff view (inline unified diff with hunk navigation)
-- [ ] Rich load confirmation (file add/remove/modify counts)
+- [x] Structural diff mode (colored ~modified/+added/-removed file lists, navigable cursor)
+- [x] Content diff view (Enter on modified file shows unified diff with syntax-colored hunks)
+- [x] Rich load confirmation (shows modified/added/removed/unchanged counts vs active)
 
 **FrankenTUI** (`tui/ftui` branch, `--features tui-ftui`):
 - [x] Elm-style `Model` trait architecture (`Msg` enum + `Cmd` returns)
