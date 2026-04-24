@@ -2,7 +2,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io;
 use std::time::Duration;
 
-use super::app::{App, View};
+use super::app::{App, NewProfileMode, View};
 
 /// Poll for input and dispatch to the appropriate handler.
 ///
@@ -110,6 +110,23 @@ fn handle_main(app: &mut App, code: KeyCode) {
         }
         KeyCode::Char('c') if app.selected_profile().is_some() => {
             app.clone_name.clear();
+            app.clone_mode = NewProfileMode::CloneFrom;
+            app.clone_categories = crate::core::clone::Category::all()
+                .into_iter()
+                .map(|c| (c, true))
+                .collect();
+            app.clone_fresh_md = false;
+            app.clone_field_index = 0;
+            app.view = View::CloneDialog;
+        }
+        KeyCode::Char('n') => {
+            let mode = if app.selected_profile().is_some() {
+                NewProfileMode::CloneFrom
+            } else {
+                NewProfileMode::Empty
+            };
+            app.clone_name.clear();
+            app.clone_mode = mode;
             app.clone_categories = crate::core::clone::Category::all()
                 .into_iter()
                 .map(|c| (c, true))
@@ -168,9 +185,17 @@ fn handle_help(app: &mut App, code: KeyCode) {
 }
 
 fn handle_clone_dialog(app: &mut App, code: KeyCode) {
-    // Field layout: 0 = name, 1..=N = category toggles, N+1 = fresh CLAUDE.md
-    let num_cats = app.clone_categories.len();
-    let max_field = num_cats + 1; // 0=name, 1..num_cats=categories, num_cats+1=fresh_md
+    // Field layout:
+    //   0 = name
+    //   1 = mode toggle (Empty / CloneFrom)
+    //   2..=10 = category toggles (only in CloneFrom mode)
+    //   11 = fresh CLAUDE.md toggle (only in CloneFrom mode)
+    let num_cats = app.clone_categories.len(); // 9
+    let max_field = if app.clone_mode == NewProfileMode::CloneFrom {
+        num_cats + 2 // 0=name, 1=mode, 2..10=cats, 11=fresh
+    } else {
+        1 // 0=name, 1=mode (no categories in Empty mode)
+    };
 
     match code {
         KeyCode::Esc => app.view = View::Detail,
@@ -184,12 +209,47 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
                 app.clone_field_index - 1
             };
         }
-        KeyCode::Char(' ') if app.clone_field_index >= 1 && app.clone_field_index <= num_cats => {
-            let idx = app.clone_field_index - 1;
-            app.clone_categories[idx].1 = !app.clone_categories[idx].1;
+        // Mode toggle (field 1)
+        KeyCode::Char(' ') if app.clone_field_index == 1 => {
+            app.clone_mode = match app.clone_mode {
+                NewProfileMode::CloneFrom => NewProfileMode::Empty,
+                NewProfileMode::Empty => {
+                    if app.selected_profile().is_some() {
+                        NewProfileMode::CloneFrom
+                    } else {
+                        NewProfileMode::Empty // can't clone without a source
+                    }
+                }
+            };
+            // Clamp field index if we just switched to Empty mode
+            if app.clone_mode == NewProfileMode::Empty && app.clone_field_index > 1 {
+                app.clone_field_index = 1;
+            }
         }
-        KeyCode::Char(' ') if app.clone_field_index == max_field => {
+        // Category toggles (fields 2..=10, CloneFrom only)
+        KeyCode::Char(' ')
+            if app.clone_mode == NewProfileMode::CloneFrom
+                && app.clone_field_index >= 2
+                && app.clone_field_index <= num_cats + 1 =>
+        {
+            let idx = app.clone_field_index - 2;
+            let new_val = !app.clone_categories[idx].1;
+            app.clone_categories[idx].1 = new_val;
+            // Mutual exclusivity: enabling CLAUDE.md category disables fresh_md
+            if idx == 0 && new_val {
+                app.clone_fresh_md = false;
+            }
+        }
+        // Fresh CLAUDE.md toggle (field 11, CloneFrom only)
+        KeyCode::Char(' ')
+            if app.clone_mode == NewProfileMode::CloneFrom
+                && app.clone_field_index == num_cats + 2 =>
+        {
             app.clone_fresh_md = !app.clone_fresh_md;
+            // Mutual exclusivity: enabling fresh_md disables CLAUDE.md category
+            if app.clone_fresh_md {
+                app.clone_categories[0].1 = false;
+            }
         }
         KeyCode::Backspace if app.clone_field_index == 0 => {
             app.clone_name.pop();
@@ -197,7 +257,12 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
         KeyCode::Char(c) if app.clone_field_index == 0 => {
             app.clone_name.push(c);
         }
-        KeyCode::Enter => execute_clone(app),
+        KeyCode::Enter => {
+            match app.clone_mode {
+                NewProfileMode::Empty => execute_new_empty(app),
+                NewProfileMode::CloneFrom => execute_clone(app),
+            }
+        }
         _ => {}
     }
 }
@@ -242,6 +307,79 @@ fn execute_clone(app: &mut App) {
             app.status_message = Some(format!("Clone failed: {e}"));
         }
     }
+    app.view = View::Detail;
+}
+
+fn execute_new_empty(app: &mut App) {
+    let name = app.clone_name.trim().to_string();
+    if name.is_empty() {
+        app.status_message = Some("Profile name cannot be empty.".to_string());
+        return;
+    }
+
+    let profile_dir = app.paths.profile_dir(&name);
+    if profile_dir.exists() {
+        app.status_message = Some(format!("Profile \"{name}\" already exists."));
+        return;
+    }
+
+    let files_dir = app.paths.profile_files_dir(&name);
+    if let Err(e) = std::fs::create_dir_all(&files_dir) {
+        app.status_message = Some(format!("Failed to create profile: {e}"));
+        app.view = View::Detail;
+        return;
+    }
+
+    // Write an empty CLAUDE.md
+    let claude_md = files_dir.join("CLAUDE.md");
+    if let Err(e) = std::fs::write(&claude_md, "") {
+        app.status_message = Some(format!("Failed to write CLAUDE.md: {e}"));
+        app.view = View::Detail;
+        return;
+    }
+
+    let hash = crate::core::checksum::sha256_file(&claude_md).unwrap_or_default();
+    let mut files = std::collections::HashMap::new();
+    files.insert(
+        "CLAUDE.md".to_string(),
+        crate::core::profile::FileEntry {
+            checksum: hash,
+            size: 0,
+            source: crate::core::profile::FileSource::Skeleton,
+        },
+    );
+
+    let manifest = crate::core::profile::ProfileManifest {
+        version: 1,
+        name: name.clone(),
+        created_at: chrono::Utc::now(),
+        last_loaded: None,
+        load_count: 0,
+        description: String::new(),
+        tags: Vec::new(),
+        files,
+        excluded_patterns: Vec::new(),
+    };
+
+    if let Err(e) = crate::storage::manifest::write(&app.paths.profile_manifest(&name), &manifest) {
+        app.status_message = Some(format!("Failed to write manifest: {e}"));
+        app.view = View::Detail;
+        return;
+    }
+
+    let meta = crate::core::profile::ProfileMeta {
+        description: String::new(),
+        tags: Vec::new(),
+        notes: Some("Created as empty profile".to_string()),
+        created_by: std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "unknown".to_string()),
+    };
+    let _ = crate::storage::meta::write(&app.paths.profile_meta(&name), &meta);
+
+    app.status_message = Some(format!("Created empty profile \"{name}\"."));
+    let _ = app.refresh();
+    app.rebuild_tree();
     app.view = View::Detail;
 }
 

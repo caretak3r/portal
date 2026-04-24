@@ -18,6 +18,16 @@ pub enum View {
     Help,
 }
 
+/// Whether the new-profile dialog creates an empty profile or clones from selected.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NewProfileMode {
+    /// Clone categories from the selected profile.
+    #[default]
+    CloneFrom,
+    /// Start with a blank skeleton (empty CLAUDE.md only).
+    Empty,
+}
+
 /// Aggregated info for a single profile.
 pub struct ProfileInfo {
     pub name: String,
@@ -211,11 +221,12 @@ pub struct App {
     pub status_message: Option<String>,
     pub file_scroll: u16,
 
-    // Clone dialog fields
+    // Clone / new-profile dialog fields
     pub clone_name: String,
+    pub clone_mode: NewProfileMode,
     pub clone_categories: Vec<(Category, bool)>,
     pub clone_fresh_md: bool,
-    /// 0 = name field, 1..=9 = category toggles, 10 = fresh CLAUDE.md toggle
+    /// 0 = name, 1 = mode toggle, 2..=10 = category toggles, 11 = fresh CLAUDE.md
     pub clone_field_index: usize,
 
     // Detail pane tree state
@@ -251,6 +262,7 @@ impl App {
             status_message: None,
             file_scroll: 0,
             clone_name: String::new(),
+            clone_mode: NewProfileMode::CloneFrom,
             clone_categories: Category::all().into_iter().map(|c| (c, true)).collect(),
             clone_fresh_md: false,
             clone_field_index: 0,

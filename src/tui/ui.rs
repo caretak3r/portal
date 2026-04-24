@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::core::diff::{diff_profiles, DiffSide};
 
-use super::app::{App, View};
+use super::app::{App, NewProfileMode, View};
 
 /// Render the entire TUI frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -235,6 +235,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled(" Tab", hint), Span::raw(" next profile  "),
             Span::styled("d", hint), Span::raw(" diff  "),
             Span::styled("s", hint), Span::raw(" save  "),
+            Span::styled("n", hint), Span::raw(" new  "),
             Span::styled("c", hint), Span::raw(" clone  "),
             Span::styled("?", hint), Span::raw(" help"),
         ]),
@@ -434,76 +435,138 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     frame.render_widget(paragraph, area);
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let source_name = app
         .selected_profile()
-        .map_or("<none>", |p| p.name.as_str());
+        .map(|p| p.name.as_str());
+
+    let title = match app.clone_mode {
+        NewProfileMode::Empty => " New Profile ".to_string(),
+        NewProfileMode::CloneFrom => {
+            format!(" New Profile (from \"{}\") ", source_name.unwrap_or("?"))
+        }
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Clone \"{source_name}\" "));
+        .title(title);
 
     let label = Style::default().fg(Color::Cyan);
     let active_field = Style::default().fg(Color::Yellow).bold();
     let dim = Style::default().fg(Color::DarkGray);
+    let disabled = Style::default().fg(Color::DarkGray);
+
+    let ptr = |idx: usize| -> Span<'_> {
+        if app.clone_field_index == idx {
+            Span::styled("▸ ", active_field)
+        } else {
+            Span::raw("  ")
+        }
+    };
 
     let mut lines: Vec<Line<'_>> = Vec::new();
-
-    lines.push(Line::from("Create a new profile from this one."));
-    lines.push(Line::from(""));
 
     // Name field (index 0)
     let name_style = if app.clone_field_index == 0 { active_field } else { Style::default() };
     let cursor = if app.clone_field_index == 0 { "_" } else { "" };
     lines.push(Line::from(vec![
-        if app.clone_field_index == 0 { Span::styled("▸ ", active_field) } else { Span::raw("  ") },
+        ptr(0),
         Span::styled("Name: ", label),
         Span::styled(format!("{}{cursor}", app.clone_name), name_style),
     ]));
     lines.push(Line::from(""));
 
-    // Category toggles (indices 1..=N)
+    // Mode toggle (index 1)
+    let mode_label = match app.clone_mode {
+        NewProfileMode::Empty => "Empty (fresh start)",
+        NewProfileMode::CloneFrom => {
+            if source_name.is_some() {
+                "Clone from selected"
+            } else {
+                "Empty (fresh start)"
+            }
+        }
+    };
+    let mode_style = if app.clone_field_index == 1 { active_field } else { Style::default() };
     lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("Categories to include:", label),
+        ptr(1),
+        Span::styled("Mode: ", label),
+        Span::styled(format!("< {mode_label} >"), mode_style),
     ]));
+    lines.push(Line::from(""));
 
-    let cat_names = [
-        "CLAUDE.md", "Settings", "Skills", "Rules", "Memory",
-        "Commands", "Agents", "Hooks", "Plugins",
-    ];
-
-    for (i, ((_, enabled), name)) in app.clone_categories.iter().zip(cat_names.iter()).enumerate() {
-        let field_idx = i + 1;
-        let checkbox = if *enabled { "[x]" } else { "[ ]" };
-        let style = if app.clone_field_index == field_idx { active_field } else { Style::default() };
-        let pointer = if app.clone_field_index == field_idx { "▸ " } else { "  " };
+    // Category toggles and fresh CLAUDE.md — only in CloneFrom mode
+    if app.clone_mode == NewProfileMode::CloneFrom {
         lines.push(Line::from(vec![
-            if app.clone_field_index == field_idx { Span::styled(pointer, active_field) } else { Span::raw(pointer) },
-            Span::styled(format!("  {checkbox} {name}"), style),
+            Span::raw("  "),
+            Span::styled("Include:", label),
+        ]));
+
+        let cat_names = [
+            "CLAUDE.md", "Settings", "Skills", "Rules", "Memory",
+            "Commands", "Agents", "Hooks", "Plugins",
+        ];
+
+        for (i, ((_, enabled), name)) in app.clone_categories.iter().zip(cat_names.iter()).enumerate() {
+            let field_idx = i + 2;
+            let checkbox = if *enabled { "[x]" } else { "[ ]" };
+            // CLAUDE.md category gets a hint when disabled by fresh_md
+            let suffix = if i == 0 && app.clone_fresh_md {
+                " (using empty instead)"
+            } else {
+                ""
+            };
+            let style = if app.clone_field_index == field_idx {
+                active_field
+            } else if i == 0 && app.clone_fresh_md {
+                disabled
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(vec![
+                ptr(field_idx),
+                Span::styled(format!("  {checkbox} {name}{suffix}"), style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+
+        // Fresh CLAUDE.md toggle (field num_cats + 2)
+        let num_cats = app.clone_categories.len();
+        let fresh_idx = num_cats + 2;
+        let fresh_check = if app.clone_fresh_md { "[x]" } else { "[ ]" };
+        let claude_md_on = app.clone_categories[0].1;
+        let fresh_suffix = if !app.clone_fresh_md && claude_md_on {
+            " (using source)"
+        } else {
+            ""
+        };
+        let fresh_style = if app.clone_field_index == fresh_idx {
+            active_field
+        } else if !app.clone_fresh_md && claude_md_on {
+            disabled
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            ptr(fresh_idx),
+            Span::styled(
+                format!("  {fresh_check} Start with empty CLAUDE.md{fresh_suffix}"),
+                fresh_style,
+            ),
         ]));
     }
 
     lines.push(Line::from(""));
-
-    // Fresh CLAUDE.md toggle (last index)
-    let fresh_idx = app.clone_categories.len() + 1;
-    let fresh_check = if app.clone_fresh_md { "[x]" } else { "[ ]" };
-    let fresh_style = if app.clone_field_index == fresh_idx { active_field } else { Style::default() };
-    let fresh_ptr = if app.clone_field_index == fresh_idx { "▸ " } else { "  " };
-    lines.push(Line::from(vec![
-        if app.clone_field_index == fresh_idx { Span::styled(fresh_ptr, active_field) } else { Span::raw(fresh_ptr) },
-        Span::styled(format!("  {fresh_check} Start with empty CLAUDE.md"), fresh_style),
-    ]));
-
-    lines.push(Line::from(""));
+    let action = if app.clone_mode == NewProfileMode::Empty { "create" } else { "clone" };
     lines.push(Line::from(vec![
         Span::styled("  Tab/↑↓", dim),
         Span::raw(" navigate  "),
         Span::styled("Space", dim),
         Span::raw(" toggle  "),
         Span::styled("Enter", dim),
-        Span::raw(" clone  "),
+        Span::raw(format!(" {action}  ")),
         Span::styled("Esc", dim),
         Span::raw(" cancel"),
     ]));
@@ -533,6 +596,7 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         Line::styled(" Actions", Style::default().bold()),
         Line::from(vec![Span::styled("  d       ", hint), Span::raw("diff selected vs active")]),
         Line::from(vec![Span::styled("  s       ", hint), Span::raw("save current config")]),
+        Line::from(vec![Span::styled("  n       ", hint), Span::raw("new profile (empty or clone)")]),
         Line::from(vec![Span::styled("  c       ", hint), Span::raw("clone selected profile")]),
         Line::from(vec![Span::styled("  Esc     ", hint), Span::raw("back / cancel")]),
         Line::from(vec![Span::styled("  ?       ", hint), Span::raw("toggle help")]),
