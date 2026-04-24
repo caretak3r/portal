@@ -44,7 +44,15 @@ portal verify [NAME]    Check profile integrity (SHA-256 checksums)
 portal verify --fix-plugins   Verify and reinstall failed plugins
 portal export <NAME>    Export a profile to a portable .tar.zst archive
 portal import <PATH>    Import a profile from an archive
+portal clone SRC NEW    Clone a profile, selectively choosing what to bring
 portal recover          Recover from a crashed swap (.claude.portal-old)
+```
+
+**Clone examples:**
+```bash
+portal clone work-redteam new-webdev --only skills,rules
+portal clone work-redteam minimal --without memory,hooks,plugins
+portal clone work-redteam fresh --only skills --fresh-claude-md
 ```
 
 **Flags:** `--dry-run`, `--no-plugins`, `--no-backup`, `--force`, `-v`, `-q`
@@ -174,7 +182,7 @@ reinstall_timeout_secs = 30
 - [x] Storage layer (manifest, state, meta, plugins_manifest read/write)
 - [x] SHA-256 checksum engine with file and manifest verification
 - [x] Skeleton creation and verification
-- [x] Snapshot engine (save with exclusion patterns, 22 excluded paths)
+- [x] Snapshot engine (save with exclusion patterns, segment-based `.git/`/`node_modules` exclusion)
 - [x] Plugin blueprint extraction from `settings.json`
 - [x] Plugin reinstallation (`claude plugin install`, GitHub clone, local path)
 - [x] tar.zst backup engine (create, restore, prune)
@@ -184,6 +192,7 @@ reinstall_timeout_secs = 30
 - [x] 4-level diff engine (manifest, tree, content via `similar`, plugins)
 - [x] Export/import profiles as portable `.tar.zst` archives
 - [x] Crash recovery (`portal recover`)
+- [x] Clone profiles with selective category inclusion (`--only`, `--without`, `--fresh-claude-md`)
 - [x] Config file support (`portal.config.toml` with defaults)
 
 ### CLI
@@ -196,6 +205,7 @@ reinstall_timeout_secs = 30
 - [x] `verify` with `--fix-plugins`
 - [x] `export` / `import`
 - [x] `recover`
+- [x] `clone` with `--only`, `--without`, `--fresh-claude-md`
 - [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
 
 ### TUI (two competing implementations)

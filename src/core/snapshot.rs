@@ -34,12 +34,24 @@ pub const EXCLUDED_PATTERNS: &[&str] = &[
     ".DS_Store",
 ];
 
+/// Path segments that indicate a nested `.git/` directory (inside plugins,
+/// skills, etc.) and should always be excluded regardless of depth.
+const EXCLUDED_SEGMENTS: &[&str] = &[".git", "node_modules", "__pycache__", ".venv"];
+
 /// Check whether a relative path matches any exclusion pattern.
 #[must_use]
 pub fn is_excluded(rel_path: &str) -> bool {
-    EXCLUDED_PATTERNS
+    // Check prefix-based patterns (top-level exclusions).
+    if EXCLUDED_PATTERNS
         .iter()
         .any(|pat| rel_path == *pat || rel_path.starts_with(&format!("{pat}/")))
+    {
+        return true;
+    }
+    // Check segment-based patterns (`.git/` at any depth).
+    rel_path
+        .split('/')
+        .any(|seg| EXCLUDED_SEGMENTS.contains(&seg))
 }
 
 /// Walk `claude_dir`, filter out excluded paths, return sorted trackable files.

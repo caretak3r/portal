@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use console::style;
 
-use portal::core::{backup, checksum, diff, loader, plugins, safety, skeleton, snapshot, transport};
+use portal::core::{backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport};
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
 /// Configuration transport layer for Claude Code.
@@ -112,6 +112,25 @@ enum Commands {
         /// Path to the .tar.zst archive
         path: String,
     },
+    /// Clone a profile, selectively choosing what to bring
+    Clone {
+        /// Source profile name
+        source: String,
+        /// New profile name
+        target: String,
+        /// Description for the new profile
+        #[arg(short, long, default_value = "")]
+        description: String,
+        /// Only include these categories (comma-separated: claude-md,settings,skills,rules,memory,commands,agents,hooks,plugins)
+        #[arg(long)]
+        only: Option<String>,
+        /// Exclude these categories (comma-separated)
+        #[arg(long)]
+        without: Option<String>,
+        /// Start with an empty CLAUDE.md instead of copying the source's
+        #[arg(long)]
+        fresh_claude_md: bool,
+    },
     /// Recover from a crashed swap (.claude.portal-old)
     Recover,
 }
@@ -148,6 +167,23 @@ pub fn run() -> Result<()> {
         }
         Some(Commands::Export { name, output }) => cmd_export(&cli, &paths, name, output.as_deref()),
         Some(Commands::Import { path }) => cmd_import(&cli, &paths, path),
+        Some(Commands::Clone {
+            source,
+            target,
+            description,
+            only,
+            without,
+            fresh_claude_md,
+        }) => cmd_clone(
+            &cli,
+            &paths,
+            source,
+            target,
+            description,
+            only.as_deref(),
+            without.as_deref(),
+            *fresh_claude_md,
+        ),
         Some(Commands::Recover) => cmd_recover(&cli, &paths),
     }
 }
@@ -228,6 +264,10 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
         println!(
             "  {}     Import profile from archive",
             style("import").green()
+        );
+        println!(
+            "  {}      Clone profile selectively",
+            style("clone").green()
         );
         println!(
             "  {}    Recover from crashed swap",
@@ -1045,6 +1085,78 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>, fix_plugins: b
 
     if !mismatches.is_empty() && !cli.quiet {
         bail!("Integrity check failed for profile \"{name}\".");
+    }
+
+    Ok(())
+}
+
+// ── clone ───────────────────────────────────────────────────────────
+
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
+fn cmd_clone(
+    cli: &Cli,
+    paths: &PortalPaths,
+    source: &str,
+    target: &str,
+    description: &str,
+    only: Option<&str>,
+    without: Option<&str>,
+    fresh_claude_md: bool,
+) -> Result<()> {
+    let only_cats = only.map(clone::parse_categories).transpose()?;
+    let without_cats = without.map(clone::parse_categories).transpose()?;
+
+    if only_cats.is_some() && without_cats.is_some() {
+        bail!("Cannot use both --only and --without. Pick one.");
+    }
+
+    if cli.dry_run {
+        let label = match (&only_cats, &without_cats) {
+            (Some(cats), _) => format!("only {:?}", cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()),
+            (_, Some(cats)) => format!("without {:?}", cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()),
+            _ => "all categories".to_string(),
+        };
+        println!(
+            "[dry-run] Would clone \"{}\" -> \"{}\" ({}{})",
+            source,
+            target,
+            label,
+            if fresh_claude_md { ", fresh CLAUDE.md" } else { "" }
+        );
+        return Ok(());
+    }
+
+    paths.ensure_dirs()?;
+
+    let opts = clone::CloneOptions {
+        source,
+        target,
+        description,
+        only: only_cats,
+        without: without_cats,
+        fresh_claude_md,
+    };
+
+    let spinner = progress_spinner("Cloning profile...");
+    let result = clone::clone_profile(paths, &opts)?;
+    finish_spinner(
+        &spinner,
+        &format!(
+            "Cloned \"{}\" -> \"{}\"",
+            style(&result.source).cyan(),
+            style(&result.target).green().bold(),
+        ),
+    );
+
+    println!(
+        "  {} files cloned, {} skipped",
+        result.files_cloned, result.files_skipped
+    );
+    if !result.categories_included.is_empty() {
+        println!("  Categories: {}", result.categories_included.join(", "));
+    }
+    if result.plugins_included {
+        println!("  Plugins: included");
     }
 
     Ok(())

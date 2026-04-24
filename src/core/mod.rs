@@ -1,5 +1,6 @@
 pub mod backup;
 pub mod checksum;
+pub mod clone;
 pub mod diff;
 pub mod loader;
 pub mod plugins;
