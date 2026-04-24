@@ -12,6 +12,8 @@ pub enum View {
     #[default]
     Detail,
     Diff,
+    /// Inline unified diff for a single file (entered from Diff view).
+    ContentDiff,
     SaveDialog,
     LoadConfirm,
     CloneDialog,
@@ -229,6 +231,16 @@ pub struct App {
     /// 0 = name, 1 = mode toggle, 2..=10 = category toggles, 11 = fresh CLAUDE.md
     pub clone_field_index: usize,
 
+    // Diff view state
+    /// Navigable file list in diff view (modified files that can be drilled into).
+    pub diff_files: Vec<String>,
+    /// Cursor position in the diff file list.
+    pub diff_cursor: usize,
+    /// Cached content diff lines for the currently viewed file.
+    pub content_diff_text: String,
+    /// Scroll position in content diff view.
+    pub content_diff_scroll: u16,
+
     // Detail pane tree state
     pub expanded_dirs: HashSet<String>,
     pub detail_cursor: usize,
@@ -266,6 +278,10 @@ impl App {
             clone_categories: Category::all().into_iter().map(|c| (c, true)).collect(),
             clone_fresh_md: false,
             clone_field_index: 0,
+            diff_files: Vec::new(),
+            diff_cursor: 0,
+            content_diff_text: String::new(),
+            content_diff_scroll: 0,
             expanded_dirs: HashSet::new(),
             detail_cursor: 0,
             file_tree: Vec::new(),

@@ -32,6 +32,7 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
 
     match app.view {
         View::Detail | View::Diff => handle_main(app, key.code),
+        View::ContentDiff => handle_content_diff(app, key.code),
         View::SaveDialog => handle_save_dialog(app, key.code),
         View::LoadConfirm => handle_load_confirm(app, key.code),
         View::CloneDialog => handle_clone_dialog(app, key.code),
@@ -46,12 +47,14 @@ fn handle_main(app: &mut App, code: KeyCode) {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.view = View::Help,
 
-        // Profile list navigation (left pane)
-        KeyCode::Down | KeyCode::Char('j') if app.view == View::Diff => {
-            app.file_scroll = app.file_scroll.saturating_add(1);
+        // Diff view: j/k navigates the diff file list
+        KeyCode::Down | KeyCode::Char('j')
+            if app.view == View::Diff && !app.diff_files.is_empty() =>
+        {
+            app.diff_cursor = (app.diff_cursor + 1).min(app.diff_files.len() - 1);
         }
         KeyCode::Up | KeyCode::Char('k') if app.view == View::Diff => {
-            app.file_scroll = app.file_scroll.saturating_sub(1);
+            app.diff_cursor = app.diff_cursor.saturating_sub(1);
         }
 
         // Detail view: j/k moves tree cursor, Tab switches to profile nav
@@ -85,6 +88,9 @@ fn handle_main(app: &mut App, code: KeyCode) {
             } else if app.selected_profile().is_some() {
                 app.view = View::LoadConfirm;
             }
+        }
+        KeyCode::Enter if app.view == View::Diff && !app.diff_files.is_empty() => {
+            open_content_diff(app);
         }
         KeyCode::Enter if app.selected_profile().is_some() => {
             app.view = View::LoadConfirm;
@@ -181,6 +187,56 @@ fn handle_help(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Esc | KeyCode::Char('?' | 'q') => app.view = View::Detail,
         _ => {}
+    }
+}
+
+#[allow(clippy::missing_const_for_fn)] // KeyCode match is not const-compatible
+fn handle_content_diff(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.view = View::Diff;
+            app.content_diff_scroll = 0;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.content_diff_scroll = app.content_diff_scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.content_diff_scroll = app.content_diff_scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown => {
+            app.content_diff_scroll = app.content_diff_scroll.saturating_add(20);
+        }
+        KeyCode::PageUp => {
+            app.content_diff_scroll = app.content_diff_scroll.saturating_sub(20);
+        }
+        _ => {}
+    }
+}
+
+fn open_content_diff(app: &mut App) {
+    let Some(file_path) = app.diff_files.get(app.diff_cursor).cloned() else {
+        return;
+    };
+    let Some(ref active_name) = app.active_profile.clone() else {
+        return;
+    };
+    let Some(profile) = app.selected_profile() else {
+        return;
+    };
+    let selected_name = profile.name.clone();
+
+    let left = crate::core::diff::DiffSide::Profile(active_name);
+    let right = crate::core::diff::DiffSide::Profile(&selected_name);
+
+    match crate::core::diff::content_diff(&app.paths, &left, &right, &file_path) {
+        Ok(text) => {
+            app.content_diff_text = text;
+            app.content_diff_scroll = 0;
+            app.view = View::ContentDiff;
+        }
+        Err(e) => {
+            app.status_message = Some(format!("Diff error: {e}"));
+        }
     }
 }
 

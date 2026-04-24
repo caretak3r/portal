@@ -2,7 +2,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -23,6 +23,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::Detail => render_detail(frame, app, right_pane),
         View::Diff => render_diff(frame, app, right_pane),
+        View::ContentDiff => render_content_diff(frame, app, right_pane),
         View::SaveDialog => render_save_dialog(frame, app, right_pane),
         View::LoadConfirm => render_load_confirm(frame, app, right_pane),
         View::CloneDialog => render_clone_dialog(frame, app, right_pane),
@@ -256,7 +257,8 @@ fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
-fn render_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+#[allow(clippy::too_many_lines)]
+fn render_diff(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Diff vs Active ");
@@ -291,69 +293,204 @@ fn render_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         }
     };
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
-    let label = Style::default().fg(Color::Cyan);
-
-    lines.push(Line::from(vec![
-        Span::styled("Left:  ", label),
-        Span::raw(&diff_result.left_name),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Right: ", label),
-        Span::raw(&diff_result.right_name),
-    ]));
-    lines.push(Line::from(""));
-
-    lines.push(Line::from(format!(
-        "Identical: {}",
-        diff_result.shared_same.len()
-    )));
-    lines.push(Line::from(format!(
-        "Modified:  {}",
-        diff_result.different_content.len()
-    )));
-    lines.push(Line::from(format!(
-        "Left-only: {}",
-        diff_result.only_left.len()
-    )));
-    lines.push(Line::from(format!(
-        "Right-only: {}",
-        diff_result.only_right.len()
-    )));
-
-    if !diff_result.different_content.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Modified files:", label));
-        for fd in &diff_result.different_content {
-            lines.push(Line::from(format!(
-                "  {} ({} -> {} B)",
-                fd.path, fd.left_size, fd.right_size
-            )));
-        }
+    // Update the navigable file list (modified files only — those can show content diff).
+    app.diff_files = diff_result
+        .different_content
+        .iter()
+        .map(|fd| fd.path.clone())
+        .collect();
+    if app.diff_cursor >= app.diff_files.len() {
+        app.diff_cursor = app.diff_files.len().saturating_sub(1);
     }
 
-    if !diff_result.only_left.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Only in active:", label));
-        for f in &diff_result.only_left {
-            lines.push(Line::from(format!("  {f}")));
+    let label = Style::default().fg(Color::Cyan);
+    let dim = Style::default().fg(Color::DarkGray);
+    let added_style = Style::default().fg(Color::Green);
+    let removed_style = Style::default().fg(Color::Red);
+    let modified_style = Style::default().fg(Color::Yellow);
+    let highlight = Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [header_area, list_area, footer_area] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(4),
+        Constraint::Length(2),
+    ])
+    .areas(inner);
+
+    // Header: comparison names + summary counts
+    let header_lines = vec![
+        Line::from(vec![
+            Span::styled(&diff_result.left_name, label),
+            Span::styled(" vs ", dim),
+            Span::styled(&diff_result.right_name, label),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                format!("~{}", diff_result.different_content.len()),
+                modified_style,
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("+{}", diff_result.only_right.len()),
+                added_style,
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("-{}", diff_result.only_left.len()),
+                removed_style,
+            ),
+            Span::styled(
+                format!("  ={}", diff_result.shared_same.len()),
+                dim,
+            ),
+        ]),
+    ];
+    let header = Paragraph::new(header_lines);
+    frame.render_widget(header, header_area);
+
+    // File list: modified, added, removed — all in one scrollable list
+    let mut rows: Vec<Line<'_>> = Vec::new();
+    let mut navigable_idx: usize = 0;
+
+    if !diff_result.different_content.is_empty() {
+        rows.push(Line::styled("Modified:", modified_style));
+        for fd in &diff_result.different_content {
+            let delta_str = if fd.right_size >= fd.left_size {
+                format!("+{}B", fd.right_size - fd.left_size)
+            } else {
+                format!("-{}B", fd.left_size - fd.right_size)
+            };
+            let is_selected = navigable_idx == app.diff_cursor;
+            let row_style = if is_selected { highlight } else { Style::default() };
+            let marker = if is_selected { "▸ " } else { "  " };
+            rows.push(Line::from(vec![
+                Span::styled(marker, if is_selected { modified_style } else { dim }),
+                Span::styled("~ ", modified_style),
+                Span::styled(fd.path.clone(), row_style),
+                Span::styled(format!("  {delta_str}"), dim),
+            ]));
+            navigable_idx += 1;
         }
+        rows.push(Line::from(""));
     }
 
     if !diff_result.only_right.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Only in selected:", label));
+        rows.push(Line::styled("Added (in selected):", added_style));
         for f in &diff_result.only_right {
-            lines.push(Line::from(format!("  {f}")));
+            rows.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("+ ", added_style),
+                Span::raw(f.as_str()),
+            ]));
+        }
+        rows.push(Line::from(""));
+    }
+
+    if !diff_result.only_left.is_empty() {
+        rows.push(Line::styled("Removed (only in active):", removed_style));
+        for f in &diff_result.only_left {
+            rows.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("- ", removed_style),
+                Span::raw(f.as_str()),
+            ]));
         }
     }
 
+    if rows.is_empty() {
+        rows.push(Line::styled("No differences.", dim));
+    }
+
+    // Compute scroll to keep cursor visible
+    // Find cursor row in our rows vec (modified entries start after their header)
+    let cursor_row = if app.diff_cursor < diff_result.different_content.len() {
+        app.diff_cursor + 1 // +1 for the "Modified:" header
+    } else {
+        0
+    };
+    let visible_height = list_area.height as usize;
+    #[allow(clippy::cast_possible_truncation)]
+    let scroll = if cursor_row >= visible_height {
+        (cursor_row - visible_height + 1) as u16
+    } else {
+        0
+    };
+
+    let list_para = Paragraph::new(rows).scroll((scroll, 0));
+    frame.render_widget(list_para, list_area);
+
+    // Footer hints
+    let hint = Style::default().fg(Color::Yellow);
+    let footer = Paragraph::new(Line::from(vec![
+        Span::styled("j/k", hint),
+        Span::raw(" navigate  "),
+        Span::styled("Enter", hint),
+        Span::raw(" view diff  "),
+        Span::styled("d/Esc", hint),
+        Span::raw(" back"),
+    ]));
+    frame.render_widget(footer, footer_area);
+}
+
+fn render_content_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let file_name = app
+        .diff_files
+        .get(app.diff_cursor)
+        .map_or("?", String::as_str);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {file_name} "));
+
+    let added = Style::default().fg(Color::Green);
+    let removed = Style::default().fg(Color::Red);
+    let hunk_header = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+
+    let lines: Vec<Line<'_>> = app
+        .content_diff_text
+        .lines()
+        .map(|line| {
+            if line.starts_with("+++") || line.starts_with("---") {
+                Line::styled(line, hunk_header)
+            } else if line.starts_with("@@") {
+                Line::styled(line, Style::default().fg(Color::Magenta))
+            } else if line.starts_with('+') {
+                Line::styled(line, added)
+            } else if line.starts_with('-') {
+                Line::styled(line, removed)
+            } else {
+                Line::styled(line, dim)
+            }
+        })
+        .collect();
+
+    let total_lines = lines.len();
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((app.file_scroll, 0));
+        .scroll((app.content_diff_scroll, 0));
 
     frame.render_widget(paragraph, area);
+
+    // Scroll indicator in status area (reuse bottom line of block)
+    let inner = Block::default().borders(Borders::ALL).inner(area);
+    if total_lines > inner.height as usize {
+        let pct = (app.content_diff_scroll as usize * 100) / total_lines;
+        let ind = Paragraph::new(format!(" {pct}% | Esc: back  j/k: scroll"))
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(ratatui::layout::Alignment::Right);
+        let ind_area = ratatui::layout::Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
+        );
+        frame.render_widget(ind, ind_area);
+    }
 }
 
 fn render_save_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
@@ -415,21 +552,89 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         .borders(Borders::ALL)
         .title(" Confirm Load ");
 
-    let name = app
-        .selected_profile()
-        .map_or("<none>", |p| p.name.as_str());
+    let Some(profile) = app.selected_profile() else {
+        let empty = Paragraph::new("No profile selected.").block(block);
+        frame.render_widget(empty, area);
+        return;
+    };
 
-    let lines = vec![
-        Line::from(format!("Load profile \"{name}\"?")),
+    let label = Style::default().fg(Color::Cyan);
+    let dim = Style::default().fg(Color::DarkGray);
+    let added = Style::default().fg(Color::Green);
+    let removed = Style::default().fg(Color::Red);
+    let modified = Style::default().fg(Color::Yellow);
+
+    let file_count = profile.manifest.files.len();
+    let total_size: u64 = profile.manifest.files.values().map(|f| f.size).sum();
+
+    let mut lines: Vec<Line<'_>> = vec![
+        Line::from(vec![
+            Span::raw("Load "),
+            Span::styled(&profile.name, Style::default().bold()),
+            Span::raw("?"),
+        ]),
         Line::from(""),
-        Line::from("This will replace your current ~/.claude/ directory."),
-        Line::from("A backup will be created automatically."),
-        Line::from(""),
-        Line::styled(
-            "y/Enter: confirm  Esc/n: cancel",
-            Style::default().fg(Color::Yellow),
-        ),
+        Line::from(vec![
+            Span::styled("Files: ", label),
+            Span::raw(format!("{file_count} ({})", fmt_bytes(total_size))),
+        ]),
     ];
+
+    // If there's an active profile, show what will change
+    if let Some(ref active_name) = app.active_profile {
+        if active_name != &profile.name {
+            let left = DiffSide::Profile(active_name);
+            let right = DiffSide::Profile(&profile.name);
+            if let Ok(diff) = diff_profiles(&app.paths, &left, &right) {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled("Changes vs current (", dim),
+                    Span::styled(active_name, dim),
+                    Span::styled("):", dim),
+                ]));
+                if !diff.different_content.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  ~ {} modified", diff.different_content.len()),
+                            modified,
+                        ),
+                    ]));
+                }
+                if !diff.only_right.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  + {} added", diff.only_right.len()),
+                            added,
+                        ),
+                    ]));
+                }
+                if !diff.only_left.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  - {} removed", diff.only_left.len()),
+                            removed,
+                        ),
+                    ]));
+                }
+                if !diff.shared_same.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  = {} unchanged", diff.shared_same.len()),
+                            dim,
+                        ),
+                    ]));
+                }
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("A backup will be created automatically."));
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "y/Enter: confirm  Esc/n: cancel",
+        Style::default().fg(Color::Yellow),
+    ));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
@@ -592,6 +797,11 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![Span::styled("  Tab     ", hint), Span::raw("next profile")]),
         Line::from(vec![Span::styled("  S-Tab   ", hint), Span::raw("previous profile")]),
         Line::from(vec![Span::styled("  l       ", hint), Span::raw("load selected profile")]),
+        Line::from(""),
+        Line::styled(" Diff Mode (d to enter)", Style::default().bold()),
+        Line::from(vec![Span::styled("  j/k     ", hint), Span::raw("navigate modified files")]),
+        Line::from(vec![Span::styled("  Enter   ", hint), Span::raw("view file content diff")]),
+        Line::from(vec![Span::styled("  Esc     ", hint), Span::raw("back to detail view")]),
         Line::from(""),
         Line::styled(" Actions", Style::default().bold()),
         Line::from(vec![Span::styled("  d       ", hint), Span::raw("diff selected vs active")]),
