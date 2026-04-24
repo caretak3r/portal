@@ -214,6 +214,9 @@ reinstall_timeout_secs = 30
 - [x] Split-pane layout (profile list + detail)
 - [x] Collapsible folder tree with `j/k` navigation
 - [x] Save dialog, load/delete confirmation modals
+- [x] Clone dialog (`c`) with category checkboxes
+- [x] New profile dialog (`n`) with Empty/CloneFrom mode toggle
+- [x] Mutual exclusivity: CLAUDE.md category vs "Start with empty CLAUDE.md"
 - [x] Help overlay
 - [ ] Diff mode (right pane shows actual diff)
 - [ ] Content diff view (inline unified diff with hunk navigation)
@@ -223,6 +226,9 @@ reinstall_timeout_secs = 30
 - [x] Elm-style `Model` trait architecture (`Msg` enum + `Cmd` returns)
 - [x] Split-pane layout with custom color palette
 - [x] Save dialog (name + description), load/delete confirmation modals
+- [x] Clone dialog (`c`) with category checkboxes
+- [x] New profile dialog (`n`) with Empty/CloneFrom mode toggle
+- [x] Mutual exclusivity: CLAUDE.md category vs "Start with empty CLAUDE.md"
 - [x] Help overlay, status bar
 - [ ] Tags field in save dialog
 - [ ] Diff mode
