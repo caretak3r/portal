@@ -20,6 +20,30 @@ Portal stores each configuration as a named profile. Every mutating operation cr
 
 ## Install
 
+### Pre-built binaries
+
+Download from the [latest release](https://github.com/caretak3r/portal/releases/latest):
+
+```bash
+# Linux (amd64)
+curl -fsSL https://github.com/caretak3r/portal/releases/latest/download/portal-linux-amd64.tar.gz | tar xz
+sudo mv portal-linux-amd64 /usr/local/bin/portal
+
+# Linux (arm64)
+curl -fsSL https://github.com/caretak3r/portal/releases/latest/download/portal-linux-arm64.tar.gz | tar xz
+sudo mv portal-linux-arm64 /usr/local/bin/portal
+
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/caretak3r/portal/releases/latest/download/portal-darwin-arm64.tar.gz | tar xz
+sudo mv portal-darwin-arm64 /usr/local/bin/portal
+
+# macOS (Intel)
+curl -fsSL https://github.com/caretak3r/portal/releases/latest/download/portal-darwin-amd64.tar.gz | tar xz
+sudo mv portal-darwin-amd64 /usr/local/bin/portal
+```
+
+### From source
+
 ```bash
 cargo install --path .
 # or with the TUI:
@@ -399,7 +423,7 @@ reinstall_timeout_secs = 30
 
 - [ ] Homebrew formula
 - [ ] Cargo publish
-- [ ] CI/CD (GitHub Actions)
+- [x] CI/CD (GitHub Actions: test on push, cross-platform release on tag)
 
 ## License
 
