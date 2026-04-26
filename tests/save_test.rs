@@ -3,8 +3,26 @@
 use portal::core::profile::FileSource;
 use portal::core::skeleton;
 use portal::core::snapshot;
+use portal::storage::cas;
 use portal::storage::manifest;
 use portal::storage::paths::PortalPaths;
+
+/// CAS-aware: confirm the manifest carries this path AND the object exists.
+fn profile_has(paths: &PortalPaths, profile: &str, rel: &str) -> bool {
+    manifest::read(&paths.profile_manifest(profile))
+        .map(|mf| {
+            mf.files
+                .get(rel)
+                .is_some_and(|e| cas::exists(paths, &e.checksum))
+        })
+        .unwrap_or(false)
+}
+
+fn read_profile_file(paths: &PortalPaths, profile: &str, rel: &str) -> Option<Vec<u8>> {
+    let mf = manifest::read(&paths.profile_manifest(profile)).ok()?;
+    let entry = mf.files.get(rel)?;
+    std::fs::read(paths.object_path(&entry.checksum)).ok()
+}
 
 #[test]
 fn test_save_profile() {
@@ -24,18 +42,8 @@ fn test_save_profile() {
     assert!(paths.profile_manifest("test-profile").exists());
     assert!(paths.profile_plugins("test-profile").exists());
     assert!(paths.profile_meta("test-profile").exists());
-    assert!(
-        paths
-            .profile_files_dir("test-profile")
-            .join("CLAUDE.md")
-            .exists()
-    );
-    assert!(
-        paths
-            .profile_files_dir("test-profile")
-            .join("rules/test.md")
-            .exists()
-    );
+    assert!(profile_has(&paths, "test-profile", "CLAUDE.md"));
+    assert!(profile_has(&paths, "test-profile", "rules/test.md"));
 
     let read_manifest = manifest::read(&paths.profile_manifest("test-profile")).unwrap();
 
@@ -128,8 +136,8 @@ fn test_save_overwrite_preserves_metadata() {
     );
 
     // Content actually updated though.
-    let claude_md = paths.profile_files_dir("wip").join("CLAUDE.md");
-    assert_eq!(std::fs::read_to_string(claude_md).unwrap(), "v2");
+    let bytes = read_profile_file(&paths, "wip", "CLAUDE.md").unwrap();
+    assert_eq!(String::from_utf8_lossy(&bytes), "v2");
 }
 
 #[test]
@@ -162,23 +170,21 @@ fn test_save_overwrite_removes_orphan_files() {
     std::fs::write(claude.join("rules/keep.md"), "keep me").unwrap();
     std::fs::write(claude.join("rules/orphan.md"), "delete me").unwrap();
 
-    snapshot::save(&paths, "p", "", &[]).unwrap();
-    let files_dir = paths.profile_files_dir("p");
-    assert!(files_dir.join("rules/orphan.md").exists());
+    let first = snapshot::save(&paths, "p", "", &[]).unwrap();
+    assert!(first.files.contains_key("rules/orphan.md"));
 
     // Remove the file from .claude/ and re-save.
     std::fs::remove_file(claude.join("rules/orphan.md")).unwrap();
     let updated = snapshot::save(&paths, "p", "", &[]).unwrap();
 
     assert!(
-        files_dir.join("rules/keep.md").exists(),
-        "kept file remains"
+        updated.files.contains_key("rules/keep.md"),
+        "kept file remains in manifest"
     );
     assert!(
-        !files_dir.join("rules/orphan.md").exists(),
-        "orphan file removed from profile files/"
+        !updated.files.contains_key("rules/orphan.md"),
+        "orphan file removed from manifest"
     );
-    assert!(!updated.files.contains_key("rules/orphan.md"));
 }
 
 #[test]

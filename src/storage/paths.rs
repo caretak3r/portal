@@ -61,6 +61,20 @@ impl PortalPaths {
     }
 
     #[must_use]
+    pub fn objects_root(&self) -> PathBuf {
+        self.portal_root().join("objects")
+    }
+
+    /// Path to a content-addressed object given its `sha256:<hex>` hash.
+    /// Splits on the first two hex chars to keep directory entries bounded.
+    #[must_use]
+    pub fn object_path(&self, hash: &str) -> PathBuf {
+        let hex = hash.strip_prefix("sha256:").unwrap_or(hash);
+        let (prefix, rest) = hex.split_at(hex.len().min(2));
+        self.objects_root().join(prefix).join(rest)
+    }
+
+    #[must_use]
     pub fn skeleton_dir(&self) -> PathBuf {
         self.portal_root().join("skeleton")
     }
@@ -119,6 +133,7 @@ impl PortalPaths {
         std::fs::create_dir_all(self.profiles_root())?;
         std::fs::create_dir_all(self.skeleton_dir())?;
         std::fs::create_dir_all(self.backups_dir())?;
+        std::fs::create_dir_all(self.objects_root())?;
         Ok(())
     }
 }

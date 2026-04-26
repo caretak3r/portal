@@ -1,11 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 
-use crate::core::checksum;
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
 use crate::core::progress::ProgressReporter;
-use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest};
+use crate::storage::{cas, manifest, meta, paths::PortalPaths, plugins_manifest};
 
 /// Categories of files that can be selectively included in a clone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -176,13 +175,15 @@ pub fn clone_profile_with_progress(
 
     let include_plugins = included.contains(&Category::Plugins);
 
-    // Filter files by category.
-    let target_files_dir = paths.profile_files_dir(opts.target);
-    std::fs::create_dir_all(&target_files_dir)?;
+    // CAS-aware clone: filter the source manifest by category and reuse the
+    // same content hashes in the target manifest. No bytes are copied — both
+    // profiles point at the same CAS objects.
+    std::fs::create_dir_all(paths.profile_dir(opts.target))?;
 
     let mut cloned_entries: HashMap<String, FileEntry> = HashMap::new();
     let mut skipped = 0usize;
     let mut processed: u64 = 0;
+    let _ = source_files_dir; // legacy path kept above for migration; CAS clone doesn't read it
 
     progress.set_total(source_manifest.files.len() as u64);
 
@@ -191,7 +192,6 @@ pub fn clone_profile_with_progress(
         progress.tick(processed, rel_path);
         let cat = categorize_file(rel_path);
 
-        // Handle fresh-claude-md: skip source CLAUDE.md, we'll create an empty one.
         if opts.fresh_claude_md && cat == Category::ClaudeMd {
             skipped += 1;
             continue;
@@ -202,25 +202,29 @@ pub fn clone_profile_with_progress(
             continue;
         }
 
-        // Copy file.
-        let src = source_files_dir.join(rel_path);
-        let dst = target_files_dir.join(rel_path);
-
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        if src.exists() {
-            std::fs::copy(&src, &dst).with_context(|| format!("copying {rel_path}"))?;
+        // The source manifest already records the content hash. As long as the
+        // CAS object exists, the target profile can reference it directly.
+        if cas::exists(paths, &entry.checksum) {
             cloned_entries.insert(rel_path.clone(), entry.clone());
+        } else {
+            // Source still uses the legacy `files/` layout. Migrate the byte
+            // stream into CAS so the cloned profile can reference it too.
+            let src = source_files_dir.join(rel_path);
+            if src.is_file() {
+                let bytes = std::fs::read(&src)?;
+                let hash = cas::write(paths, &bytes)?;
+                let mut e = entry.clone();
+                e.checksum = hash;
+                cloned_entries.insert(rel_path.clone(), e);
+            } else {
+                skipped += 1;
+            }
         }
     }
 
-    // If fresh-claude-md, create an empty one.
+    // If fresh-claude-md, write an empty file into the CAS pool and reference it.
     if opts.fresh_claude_md {
-        let claude_md_path = target_files_dir.join("CLAUDE.md");
-        std::fs::write(&claude_md_path, "")?;
-        let hash = checksum::sha256_file(&claude_md_path)?;
+        let hash = cas::write(paths, b"")?;
         cloned_entries.insert(
             "CLAUDE.md".to_string(),
             FileEntry {

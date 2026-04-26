@@ -1,4 +1,4 @@
-use crate::storage::{manifest, paths::PortalPaths};
+use crate::storage::{cas, manifest, paths::PortalPaths};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
@@ -174,7 +174,8 @@ fn resolve_side(
     }
 }
 
-/// Read a file's content from a profile's stored files directory.
+/// Read a file's content from a profile, preferring the CAS pool and falling
+/// back to the legacy `files/` directory for unmigrated profiles.
 fn read_file_from_side(
     paths: &PortalPaths,
     side: &DiffSide<'_>,
@@ -182,6 +183,16 @@ fn read_file_from_side(
 ) -> Result<String> {
     match side {
         DiffSide::Profile(name) => {
+            let manifest_path = paths.profile_manifest(name);
+            if let Ok(mf) = manifest::read(&manifest_path)
+                && let Some(entry) = mf.files.get(file_path)
+                && cas::exists(paths, &entry.checksum)
+            {
+                return std::fs::read_to_string(paths.object_path(&entry.checksum)).map_err(|e| {
+                    anyhow::anyhow!("reading CAS object for {file_path} in \"{name}\": {e}")
+                });
+            }
+
             let full = paths.profile_files_dir(name).join(file_path);
             if !full.exists() {
                 bail!("File \"{file_path}\" not found in profile \"{name}\".");

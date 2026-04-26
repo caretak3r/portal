@@ -1,3 +1,4 @@
+pub mod cas;
 pub mod manifest;
 pub mod meta;
 pub mod paths;

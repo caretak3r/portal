@@ -37,10 +37,10 @@ fn test_export_and_import() {
     assert!(m.files.contains_key("CLAUDE.md"));
     assert!(m.files.contains_key("rules/test.md"));
 
-    // Verify file content was preserved.
-    let claude_md =
-        std::fs::read_to_string(paths2.profile_files_dir("export-test").join("CLAUDE.md")).unwrap();
-    assert_eq!(claude_md, "export test config");
+    // Verify file content was preserved (CAS-aware: read via the manifest hash).
+    let entry = m.files.get("CLAUDE.md").unwrap();
+    let bytes = std::fs::read(paths2.object_path(&entry.checksum)).unwrap();
+    assert_eq!(String::from_utf8_lossy(&bytes), "export test config");
 }
 
 #[test]

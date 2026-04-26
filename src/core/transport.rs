@@ -3,7 +3,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use crate::storage::paths::PortalPaths;
+use crate::storage::{cas, manifest, paths::PortalPaths};
 
 /// Export a profile to a portable `.tar.zst` archive.
 ///
@@ -34,8 +34,29 @@ pub fn export(paths: &PortalPaths, name: &str, output: &Path) -> Result<PathBuf>
     let encoder = zstd::Encoder::new(file, 3)?;
     let mut tar = tar::Builder::new(encoder);
 
+    // 1. Profile directory (manifest, plugins blueprint, meta, legacy files/).
     tar.append_dir_all(format!("portal-profile/{name}"), &profile_dir)
         .context("archiving profile directory")?;
+
+    // 2. CAS objects referenced by the manifest. Embedded under the profile
+    //    prefix as `objects/<aa>/<rest>` so the archive is self-contained even
+    //    if the destination has no matching content yet.
+    if let Ok(mf) = manifest::read(&paths.profile_manifest(name)) {
+        for entry in mf.files.values() {
+            let object_path = paths.object_path(&entry.checksum);
+            if !object_path.is_file() {
+                continue;
+            }
+            let hex = entry
+                .checksum
+                .strip_prefix("sha256:")
+                .unwrap_or(&entry.checksum);
+            let (shard, rest) = hex.split_at(hex.len().min(2));
+            let archive_rel = format!("portal-profile/{name}/objects/{shard}/{rest}");
+            tar.append_path_with_name(&object_path, &archive_rel)
+                .with_context(|| format!("archiving object {}", entry.checksum))?;
+        }
+    }
 
     let encoder = tar.into_inner()?;
     encoder.finish()?;
@@ -111,6 +132,41 @@ pub fn import(paths: &PortalPaths, archive_path: &Path, overwrite: bool) -> Resu
         }
         std::fs::remove_dir_all(&target_dir)
             .with_context(|| format!("removing existing profile \"{name}\""))?;
+    }
+
+    // Pull the embedded CAS objects (if present) into the local pool before
+    // installing the profile dir, so the manifest's hashes resolve.
+    let embedded_objects = extracted_dir.join("objects");
+    if embedded_objects.is_dir() {
+        paths.ensure_dirs()?;
+        for shard in walkdir::WalkDir::new(&embedded_objects)
+            .into_iter()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_type().is_file())
+        {
+            let rel = shard.path().strip_prefix(&embedded_objects)?;
+            let target = paths.objects_root().join(rel);
+            if target.exists() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(shard.path(), &target)
+                .with_context(|| format!("placing imported object {}", shard.path().display()))?;
+        }
+        // Drop embedded objects from the profile dir before moving — we don't
+        // want them duplicated under profiles/<name>/objects/.
+        let _ = std::fs::remove_dir_all(&embedded_objects);
+    }
+
+    // If the archive came from a legacy installation it may contain
+    // `files/<rel>`. Migrate those into the CAS pool so loads work uniformly.
+    let legacy_files = extracted_dir.join("files");
+    if legacy_files.is_dir() {
+        if let Ok(mf) = manifest::read(&extracted_dir.join("portal.json")) {
+            let _ = cas::migrate_profile_files(paths, &legacy_files, &mf.files);
+        }
     }
 
     // Move extracted profile into place.

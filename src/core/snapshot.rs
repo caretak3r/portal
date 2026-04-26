@@ -1,8 +1,7 @@
-use crate::core::checksum;
 use crate::core::plugins;
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
 use crate::core::progress::ProgressReporter;
-use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest};
+use crate::storage::{cas, manifest, meta, paths::PortalPaths, plugins_manifest};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -155,51 +154,44 @@ pub fn save_with_progress(
         None
     };
 
-    // Clear stale files so an overwrite removes orphans from the previous snapshot.
+    // Drop any legacy files/ directory left over from the pre-CAS layout.
+    // New saves write only to the CAS pool; the manifest carries hashes.
     let files_dir = paths.profile_files_dir(name);
     if files_dir.exists() {
         std::fs::remove_dir_all(&files_dir)
             .with_context(|| format!("clearing old files dir: {}", files_dir.display()))?;
     }
-    std::fs::create_dir_all(&files_dir)
-        .with_context(|| format!("creating profile files dir: {}", files_dir.display()))?;
+
+    // Make sure the CAS pool exists before we start writing objects.
+    std::fs::create_dir_all(paths.objects_root())
+        .with_context(|| format!("creating CAS root: {}", paths.objects_root().display()))?;
 
     // Scan trackable files.
     let trackable = scan_trackable_files(&claude_dir)?;
 
     progress.set_total(trackable.len() as u64);
 
-    // Copy files, compute checksums.
+    // Read each file once, hash it, write it to the CAS pool keyed by hash.
+    // The manifest records (path → hash, size, source).
     let mut entries: HashMap<String, FileEntry> = HashMap::new();
 
     for (i, rel) in trackable.iter().enumerate() {
         let src = claude_dir.join(rel);
-        let dst = files_dir.join(rel);
 
         let rel_str = rel.to_string_lossy().to_string();
         progress.tick(i as u64 + 1, &rel_str);
 
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating parent dir: {}", parent.display()))?;
-        }
-
-        std::fs::copy(&src, &dst).with_context(|| format!("copying file: {}", rel.display()))?;
-
-        let hash = checksum::sha256_file(&dst)?;
-        let meta = std::fs::metadata(&dst)
-            .with_context(|| format!("reading metadata: {}", dst.display()))?;
-
-        let content = std::fs::read(&dst)
-            .with_context(|| format!("reading file for classification: {}", dst.display()))?;
-
-        let source = classify_source(&rel_str, &content);
+        let bytes =
+            std::fs::read(&src).with_context(|| format!("reading file: {}", src.display()))?;
+        let size = bytes.len() as u64;
+        let hash = cas::write(paths, &bytes)?;
+        let source = classify_source(&rel_str, &bytes);
 
         entries.insert(
             rel_str,
             FileEntry {
                 checksum: hash,
-                size: meta.len(),
+                size,
                 source,
             },
         );

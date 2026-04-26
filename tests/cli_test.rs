@@ -183,9 +183,13 @@ fn test_cli_save_no_name_overwrites_active_profile() {
         .assert()
         .success();
 
-    // Confirm content was persisted into the active profile's files/.
-    let claude_md = home.join(".config/portal/profiles/wip/files/CLAUDE.md");
-    let saved = std::fs::read_to_string(&claude_md).expect("read");
+    // Confirm content was persisted: load it back and check the working copy.
+    portal_cmd()
+        .env("HOME", home)
+        .args(["load", "wip", "--force"])
+        .assert()
+        .success();
+    let saved = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).expect("read");
     assert_eq!(saved, "edited content");
 }
 
@@ -222,8 +226,13 @@ fn test_cli_save_explicit_name_matching_active_skips_prompt() {
         .assert()
         .success();
 
-    let claude_md = home.join(".config/portal/profiles/wip/files/CLAUDE.md");
-    assert_eq!(std::fs::read_to_string(claude_md).unwrap(), "round 2");
+    portal_cmd()
+        .env("HOME", home)
+        .args(["load", "wip", "--force"])
+        .assert()
+        .success();
+    let saved = std::fs::read_to_string(home.join(".claude/CLAUDE.md")).expect("read");
+    assert_eq!(saved, "round 2");
 }
 
 #[test]
