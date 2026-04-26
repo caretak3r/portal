@@ -4,7 +4,7 @@ use crate::core::profile::{
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Result of attempting to install a single plugin.
 #[derive(Debug)]
@@ -191,10 +191,14 @@ fn install_single(entry: &PluginEntry) -> PluginInstallResult {
     }
 }
 
-/// Run `claude plugin install <target>`.
+/// Run `claude plugin install <target>` with stdio fully captured so subprocess
+/// output never leaks into a parent TUI's alternate screen.
 fn run_claude_install(target: &str) -> Result<String> {
     let output = Command::new("claude")
         .args(["plugin", "install", target])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
         .with_context(|| format!("running claude plugin install {target}"))?;
 
@@ -206,7 +210,8 @@ fn run_claude_install(target: &str) -> Result<String> {
     }
 }
 
-/// Clone a GitHub repo to a temp dir, then install from there.
+/// Clone a GitHub repo to a temp dir, then install from there. Stdio is fully
+/// captured for the same reason as `run_claude_install`.
 fn install_from_github(repo: &str) -> Result<String> {
     let tmp = tempfile::tempdir().context("creating temp dir for github clone")?;
     let clone_url = if repo.starts_with("https://") || repo.starts_with("git@") {
@@ -215,14 +220,18 @@ fn install_from_github(repo: &str) -> Result<String> {
         format!("https://github.com/{repo}.git")
     };
 
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(["clone", "--depth", "1", &clone_url])
         .arg(tmp.path())
-        .status()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .with_context(|| format!("cloning {clone_url}"))?;
 
-    if !status.success() {
-        anyhow::bail!("git clone failed for {clone_url}");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git clone failed for {clone_url}: {stderr}");
     }
 
     run_claude_install(&tmp.path().to_string_lossy())
