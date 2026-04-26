@@ -26,7 +26,7 @@ fn test_cli_help() {
 }
 
 #[test]
-#[cfg(not(any(feature = "tui-ratatui", feature = "tui-ftui")))]
+#[cfg(not(feature = "tui-ratatui"))]
 fn test_cli_no_subcommand() {
     portal_cmd()
         .assert()

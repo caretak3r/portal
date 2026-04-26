@@ -207,11 +207,7 @@ If a previous swap crashed and left a `.claude.portal-old` directory behind, thi
 
 ## TUI
 
-Running `portal` without arguments launches a split-pane terminal browser. Two implementations exist on separate branches for comparison.
-
-### Ratatui (`tui/ratatui` branch)
-
-Imperative rendering with `ratatui` 0.30 and `crossterm`. Split-pane layout: profile list on the left, detail/diff/dialogs on the right.
+Running `portal` without arguments (built with `--features tui-ratatui`) launches a split-pane terminal browser on the `tui/ratatui` branch. Imperative rendering with `ratatui` 0.30 and `crossterm`. Split-pane layout: profile list on the left, detail/diff/dialogs on the right.
 
 ```
 ┌─────────────────────┬─────────────────────────────────────────────┐
@@ -252,12 +248,6 @@ Imperative rendering with `ratatui` 0.30 and `crossterm`. Split-pane layout: pro
 **Load confirmation** shows change counts against the active profile before swapping: how many files will be modified, added, removed, and unchanged.
 
 **New profile dialog** (`n`) offers a mode toggle between "Empty (fresh start)" and "Clone from selected". In clone mode, nine category checkboxes control what gets copied. The CLAUDE.md category and "Start with empty CLAUDE.md" are mutually exclusive; toggling one disables the other.
-
-### FrankenTUI (`tui/ftui` branch)
-
-Elm-style architecture using `ftui` with a `Model` trait, `Msg` enum, and `Cmd` returns. Same profile management features, different rendering framework. Modal-based dialogs instead of right-pane overlays.
-
-**Additional keys:** `D` delete profile, `r` refresh list.
 
 ## How It Works
 
@@ -385,7 +375,7 @@ reinstall_timeout_secs = 30
 - [x] `clone` with `--only`, `--without`, `--fresh-claude-md`
 - [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
 
-### TUI (two implementations)
+### TUI
 
 **Ratatui** (`tui/ratatui` branch, `--features tui-ratatui`):
 - [x] Split-pane layout (profile list + detail)
@@ -398,19 +388,6 @@ reinstall_timeout_secs = 30
 - [x] Structural diff mode (colored ~modified/+added/-removed file lists, navigable cursor)
 - [x] Content diff view (Enter on modified file shows unified diff with syntax-colored hunks)
 - [x] Rich load confirmation (modified/added/removed/unchanged counts vs active)
-
-**FrankenTUI** (`tui/ftui` branch, `--features tui-ftui`):
-- [x] Elm-style `Model` trait architecture (`Msg` enum + `Cmd` returns)
-- [x] Split-pane layout with custom color palette
-- [x] Save dialog (name + description), load/delete confirmation modals
-- [x] Clone dialog (`c`) with category checkboxes
-- [x] New profile dialog (`n`) with Empty/CloneFrom mode toggle
-- [x] Mutual exclusivity: CLAUDE.md category vs "Start with empty CLAUDE.md"
-- [x] Help overlay, status bar
-- [ ] Tags field in save dialog
-- [ ] Diff mode
-- [ ] Content diff view
-- [ ] Collapsible folder tree
 
 ### Testing
 

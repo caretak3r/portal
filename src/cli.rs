@@ -200,12 +200,7 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
         return portal::tui::run(paths);
     }
 
-    #[cfg(feature = "tui-ftui")]
-    {
-        return portal::tui::run(paths);
-    }
-
-    #[cfg(not(any(feature = "tui-ratatui", feature = "tui-ftui")))]
+    #[cfg(not(feature = "tui-ratatui"))]
     {
         println!(
             "{} v{}",
@@ -702,7 +697,7 @@ fn cmd_rm(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
         state::write(&state_path, &portal_state)?;
     }
 
-    println!("{} Deleted profile \"{name}\"", style("✓").green().bold(),);
+    println!("{} Deleted profile \"{name}\"", style("✓").green().bold());
 
     Ok(())
 }
@@ -763,7 +758,7 @@ fn cmd_reset(cli: &Cli, paths: &PortalPaths) -> Result<()> {
     }
     state::write(&state_path, &portal_state)?;
 
-    println!("{} Reset .claude/ to skeleton", style("✓").green().bold(),);
+    println!("{} Reset .claude/ to skeleton", style("✓").green().bold());
     if let Some(bp) = backup_path {
         println!("  Backup: {}", style(bp.display()).dim());
     }
