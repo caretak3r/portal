@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod palette;
 mod ui;
 
 use crate::storage::paths::PortalPaths;

@@ -3,12 +3,14 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
+use crate::config::Theme;
 use crate::core::diff::{DiffSide, diff_profiles};
 
 use super::app::{App, NewProfileMode, View};
+use super::palette::Palette;
 
 /// Render the entire TUI frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -27,10 +29,63 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SaveDialog => render_save_dialog(frame, app, right_pane),
         View::LoadConfirm => render_load_confirm(frame, app, right_pane),
         View::CloneDialog => render_clone_dialog(frame, app, right_pane),
+        View::ThemePicker => {
+            render_detail(frame, app, right_pane);
+            render_theme_picker(frame, app, frame.area());
+        }
         View::Help => render_help(frame, right_pane),
     }
 
     render_status_bar(frame, app, status_area);
+}
+
+fn render_theme_picker(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let palette = Palette::for_theme(app.theme);
+    let themes = Theme::all();
+    let height = u16::try_from(themes.len() + 6)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(2));
+    let width = 36u16.min(area.width.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = ratatui::layout::Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let items: Vec<ListItem<'_>> = themes
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let marker = if *t == app.theme { "● " } else { "  " };
+            let label = format!("{marker}{}", t.label());
+            let style = if i == app.theme_cursor {
+                Style::default()
+                    .bg(palette.selection_bg)
+                    .fg(palette.selection_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(Span::styled(label, style)))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Theme ")
+        .style(Style::default().fg(palette.header));
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, popup);
+
+    let hint_y = popup.y + popup.height.saturating_sub(2);
+    let hint_area =
+        ratatui::layout::Rect::new(popup.x + 2, hint_y, popup.width.saturating_sub(4), 1);
+    let hint = Paragraph::new(Line::styled(
+        "j/k move  Enter apply  Esc cancel",
+        Style::default().fg(palette.hint),
+    ));
+    frame.render_widget(hint, hint_area);
 }
 
 fn render_profile_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
@@ -893,6 +948,10 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![
             Span::styled("  c       ", hint),
             Span::raw("clone selected profile"),
+        ]),
+        Line::from(vec![
+            Span::styled("  T       ", hint),
+            Span::raw("change theme"),
         ]),
         Line::from(vec![
             Span::styled("  Esc     ", hint),

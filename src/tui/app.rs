@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use ratatui::widgets::ListState;
 
+use crate::config::{self, Theme};
 use crate::core::clone::Category;
 use crate::core::profile::{PluginBlueprint, ProfileManifest, ProfileMeta};
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest, state};
@@ -17,6 +18,8 @@ pub enum View {
     SaveDialog,
     LoadConfirm,
     CloneDialog,
+    /// Theme picker overlay (`T`).
+    ThemePicker,
     Help,
 }
 
@@ -265,6 +268,11 @@ pub struct App {
     pub tree_rows: Vec<TreeRow>,
     /// Which profile the cached tree belongs to.
     tree_profile: Option<String>,
+
+    /// Active TUI color theme.
+    pub theme: Theme,
+    /// Cursor position inside the theme picker overlay.
+    pub theme_cursor: usize,
 }
 
 impl App {
@@ -275,6 +283,8 @@ impl App {
     /// Returns an error if the state file or profile directories
     /// cannot be read.
     pub fn new(paths: PortalPaths) -> anyhow::Result<Self> {
+        let theme = load_theme_from_config(&paths);
+        let theme_cursor = Theme::all().iter().position(|t| *t == theme).unwrap_or(0);
         let mut app = Self {
             paths,
             profiles: Vec::new(),
@@ -302,6 +312,8 @@ impl App {
             file_tree: Vec::new(),
             tree_rows: Vec::new(),
             tree_profile: None,
+            theme,
+            theme_cursor,
         };
         app.refresh()?;
         if !app.profiles.is_empty() {
@@ -309,6 +321,12 @@ impl App {
         }
         app.rebuild_tree();
         Ok(app)
+    }
+
+    /// Persist the current theme back to `portal.config.toml`. Idempotent — if
+    /// the file already records this theme, the write is a no-op.
+    pub fn save_theme(&self) -> anyhow::Result<()> {
+        save_theme_to_config(&self.paths, self.theme)
     }
 
     /// Re-scan profiles directory and reload state.
@@ -423,4 +441,25 @@ impl App {
             self.detail_cursor = (self.detail_cursor + delta.unsigned_abs()).min(len - 1);
         }
     }
+}
+
+fn load_theme_from_config(paths: &PortalPaths) -> Theme {
+    config::load(&paths.config_file())
+        .map(|c| c.ui.theme)
+        .unwrap_or_default()
+}
+
+fn save_theme_to_config(paths: &PortalPaths, theme: Theme) -> anyhow::Result<()> {
+    let path = paths.config_file();
+    let mut cfg = config::load(&path).unwrap_or_default();
+    if cfg.ui.theme == theme {
+        return Ok(());
+    }
+    cfg.ui.theme = theme;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let serialized = toml::to_string_pretty(&cfg)?;
+    std::fs::write(&path, serialized)?;
+    Ok(())
 }

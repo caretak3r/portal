@@ -9,6 +9,59 @@ pub struct PortalConfig {
     pub backup: BackupConfig,
     #[serde(default)]
     pub plugins: PluginsConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+/// Color theme for the TUI. Themes only affect rendering — keybindings,
+/// layout, and behaviour are identical across themes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Theme {
+    /// Default ratatui colours (terminal palette).
+    #[default]
+    Default,
+    /// Catppuccin Mocha — dark, warm purple-pink accents.
+    CatppuccinMocha,
+    /// Tokyo Night — dark, blue + magenta highlights.
+    TokyoNight,
+    /// Solarized Dark — desaturated cyan/yellow on slate.
+    SolarizedDark,
+    /// Gruvbox Dark — earthy browns + orange.
+    GruvboxDark,
+}
+
+impl Theme {
+    /// All available themes, ordered for the TUI picker.
+    #[must_use]
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Default,
+            Self::CatppuccinMocha,
+            Self::TokyoNight,
+            Self::SolarizedDark,
+            Self::GruvboxDark,
+        ]
+    }
+
+    /// Display label for the picker.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::CatppuccinMocha => "Catppuccin Mocha",
+            Self::TokyoNight => "Tokyo Night",
+            Self::SolarizedDark => "Solarized Dark",
+            Self::GruvboxDark => "Gruvbox Dark",
+        }
+    }
+}
+
+/// UI / TUI configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub theme: Theme,
 }
 
 /// Backup-related configuration.

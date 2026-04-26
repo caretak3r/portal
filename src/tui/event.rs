@@ -36,16 +36,58 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
         View::SaveDialog => handle_save_dialog(app, key.code),
         View::LoadConfirm => handle_load_confirm(app, key.code),
         View::CloneDialog => handle_clone_dialog(app, key.code),
+        View::ThemePicker => handle_theme_picker(app, key.code),
         View::Help => handle_help(app, key.code),
     }
 
     Ok(app.should_quit)
 }
 
+fn handle_theme_picker(app: &mut App, code: KeyCode) {
+    use crate::config::Theme;
+    let len = Theme::all().len();
+    match code {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            // Reset cursor to whatever is currently active.
+            app.theme_cursor = Theme::all()
+                .iter()
+                .position(|t| *t == app.theme)
+                .unwrap_or(0);
+            app.view = View::Detail;
+        }
+        KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+            app.theme_cursor = (app.theme_cursor + 1) % len;
+        }
+        KeyCode::Up | KeyCode::Char('k') if len > 0 => {
+            app.theme_cursor = if app.theme_cursor == 0 {
+                len - 1
+            } else {
+                app.theme_cursor - 1
+            };
+        }
+        KeyCode::Enter => {
+            if let Some(theme) = Theme::all().get(app.theme_cursor).copied() {
+                app.theme = theme;
+                match app.save_theme() {
+                    Ok(()) => {
+                        app.status_message = Some(format!("Theme: {}", theme.label()));
+                    }
+                    Err(e) => {
+                        app.status_message = Some(format!("Theme set, save failed: {e}"));
+                    }
+                }
+            }
+            app.view = View::Detail;
+        }
+        _ => {}
+    }
+}
+
 fn handle_main(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('?') => app.view = View::Help,
+        KeyCode::Char('T') => app.view = View::ThemePicker,
 
         // Diff view: j/k navigates the diff file list
         KeyCode::Down | KeyCode::Char('j')
