@@ -139,27 +139,42 @@ fn flatten_builders(map: BTreeMap<String, DirBuilder>) -> Vec<TreeNode> {
 }
 
 fn sum_tree_size(nodes: &[TreeNode]) -> u64 {
-    nodes.iter().map(|n| match n {
-        TreeNode::File { size, .. } => *size,
-        TreeNode::Dir { total_size, .. } => *total_size,
-    }).sum()
+    nodes
+        .iter()
+        .map(|n| match n {
+            TreeNode::File { size, .. } => *size,
+            TreeNode::Dir { total_size, .. } => *total_size,
+        })
+        .sum()
 }
 
 fn count_tree_files(nodes: &[TreeNode]) -> usize {
-    nodes.iter().map(|n| match n {
-        TreeNode::File { .. } => 1,
-        TreeNode::Dir { file_count, .. } => *file_count,
-    }).sum()
+    nodes
+        .iter()
+        .map(|n| match n {
+            TreeNode::File { .. } => 1,
+            TreeNode::Dir { file_count, .. } => *file_count,
+        })
+        .sum()
 }
 
 /// Flatten the tree into visible rows, respecting which directories are expanded.
 pub fn visible_rows(nodes: &[TreeNode], expanded: &HashSet<String>, prefix: &str) -> Vec<TreeRow> {
     let mut rows = Vec::new();
-    let depth = if prefix.is_empty() { 0 } else { prefix.matches('/').count() + 1 };
+    let depth = if prefix.is_empty() {
+        0
+    } else {
+        prefix.matches('/').count() + 1
+    };
 
     for node in nodes {
         match node {
-            TreeNode::Dir { name, children, total_size, file_count } => {
+            TreeNode::Dir {
+                name,
+                children,
+                total_size,
+                file_count,
+            } => {
                 let dir_path = if prefix.is_empty() {
                     name.clone()
                 } else {
@@ -347,9 +362,7 @@ impl App {
 
     /// Whether the named profile is the currently active one.
     pub fn is_active(&self, name: &str) -> bool {
-        self.active_profile
-            .as_deref()
-            .is_some_and(|a| a == name)
+        self.active_profile.as_deref().is_some_and(|a| a == name)
     }
 
     /// Rebuild the file tree for the currently selected profile (if it changed).

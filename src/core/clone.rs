@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 
@@ -211,8 +211,7 @@ pub fn clone_profile_with_progress(
         }
 
         if src.exists() {
-            std::fs::copy(&src, &dst)
-                .with_context(|| format!("copying {rel_path}"))?;
+            std::fs::copy(&src, &dst).with_context(|| format!("copying {rel_path}"))?;
             cloned_entries.insert(rel_path.clone(), entry.clone());
         }
     }

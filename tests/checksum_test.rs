@@ -3,8 +3,7 @@ use portal::core::profile::{FileEntry, FileSource};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-const HELLO_HASH: &str =
-    "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+const HELLO_HASH: &str = "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
 
 #[test]
 fn test_sha256_file() {

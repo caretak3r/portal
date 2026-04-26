@@ -16,11 +16,7 @@ pub const SKELETON_DIRS: &[&str] = &[
 ];
 
 /// All files that must exist in a valid Claude skeleton.
-const SKELETON_FILES: &[&str] = &[
-    "settings.json",
-    "CLAUDE.md",
-    ".claude/settings.local.json",
-];
+const SKELETON_FILES: &[&str] = &["settings.json", "CLAUDE.md", ".claude/settings.local.json"];
 
 /// A problem found during skeleton verification.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,16 +44,14 @@ pub fn create(claude_dir: &Path) -> Result<()> {
 
     // .claude/ inner dir (parent of settings.local.json) is created by
     // the .claude/hooks entry above, but be explicit.
-    std::fs::create_dir_all(claude_dir.join(".claude"))
-        .context("creating .claude inner dir")?;
+    std::fs::create_dir_all(claude_dir.join(".claude")).context("creating .claude inner dir")?;
 
     // settings.json
     std::fs::write(claude_dir.join("settings.json"), DEFAULT_SETTINGS)
         .context("writing settings.json")?;
 
     // CLAUDE.md — empty
-    std::fs::write(claude_dir.join("CLAUDE.md"), "")
-        .context("writing CLAUDE.md")?;
+    std::fs::write(claude_dir.join("CLAUDE.md"), "").context("writing CLAUDE.md")?;
 
     // .claude/settings.local.json — empty JSON object
     std::fs::write(claude_dir.join(".claude/settings.local.json"), "{}")

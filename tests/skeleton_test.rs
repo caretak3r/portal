@@ -18,10 +18,8 @@ fn test_create_skeleton() {
     assert!(claude_dir.join("hooks").is_dir());
 
     let settings: serde_json::Value =
-        serde_json::from_str(
-            &std::fs::read_to_string(claude_dir.join("settings.json")).unwrap(),
-        )
-        .unwrap();
+        serde_json::from_str(&std::fs::read_to_string(claude_dir.join("settings.json")).unwrap())
+            .unwrap();
     assert!(settings.is_object());
 
     let claude_md = std::fs::read_to_string(claude_dir.join("CLAUDE.md")).unwrap();
@@ -63,5 +61,7 @@ fn test_verify_detects_missing_file() {
 
     let issues = skeleton::verify(&claude_dir).unwrap();
     assert!(!issues.is_empty());
-    assert!(issues.contains(&skeleton::SkeletonIssue::MissingFile("settings.json".to_string())));
+    assert!(issues.contains(&skeleton::SkeletonIssue::MissingFile(
+        "settings.json".to_string()
+    )));
 }

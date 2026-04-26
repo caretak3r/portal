@@ -36,13 +36,13 @@ pub fn extract_blueprint(claude_dir: &Path) -> Result<PluginBlueprint> {
     // Parse extraKnownMarketplaces first — needed for source resolution.
     let mut marketplaces: HashMap<String, MarketplaceEntry> = HashMap::new();
 
-    if let Some(mkts) = settings.get("extraKnownMarketplaces").and_then(|v| v.as_object()) {
+    if let Some(mkts) = settings
+        .get("extraKnownMarketplaces")
+        .and_then(|v| v.as_object())
+    {
         for (name, val) in mkts {
             if let Some(src) = val.get("source").and_then(|v| v.as_object()) {
-                let source_type = src
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let source_type = src.get("source").and_then(|v| v.as_str()).unwrap_or("");
 
                 let ms = match source_type {
                     "github" => {
@@ -119,10 +119,7 @@ pub fn determine_source(settings: &serde_json::Value, plugin_id: &str) -> Plugin
     {
         if let Some(mkt) = mkts.get(marketplace_name) {
             if let Some(src) = mkt.get("source").and_then(|v| v.as_object()) {
-                let source_type = src
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let source_type = src.get("source").and_then(|v| v.as_str()).unwrap_or("");
 
                 return match source_type {
                     "github" => {
@@ -162,11 +159,7 @@ pub fn determine_source(settings: &serde_json::Value, plugin_id: &str) -> Plugin
 /// All failures are non-fatal and captured in the returned results.
 #[must_use]
 pub fn reinstall(blueprint: &PluginBlueprint) -> Vec<PluginInstallResult> {
-    blueprint
-        .plugins
-        .iter()
-        .map(install_single)
-        .collect()
+    blueprint.plugins.iter().map(install_single).collect()
 }
 
 /// Install a single plugin, returning the result.

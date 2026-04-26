@@ -108,11 +108,7 @@ mod tests {
     #[test]
     fn load_partial_toml() {
         let tmp = tempfile::NamedTempFile::new().expect("tempfile");
-        std::fs::write(
-            tmp.path(),
-            "[backup]\nmax_count = 5\n",
-        )
-        .expect("write");
+        std::fs::write(tmp.path(), "[backup]\nmax_count = 5\n").expect("write");
         let cfg = load(tmp.path()).expect("load");
         assert_eq!(cfg.backup.max_count, 5);
         assert_eq!(cfg.backup.max_age_days, 90); // default

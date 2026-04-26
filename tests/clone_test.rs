@@ -8,7 +8,11 @@ fn setup_source_profile(paths: &PortalPaths) {
     let claude = paths.claude_root();
     portal::core::skeleton::create(&claude).unwrap();
     std::fs::write(claude.join("CLAUDE.md"), "# My Config\nCustom content").unwrap();
-    std::fs::write(claude.join("settings.json"), r#"{"permissions":{"allow":true}}"#).unwrap();
+    std::fs::write(
+        claude.join("settings.json"),
+        r#"{"permissions":{"allow":true}}"#,
+    )
+    .unwrap();
     std::fs::create_dir_all(claude.join("skills/red-team")).unwrap();
     std::fs::write(claude.join("skills/red-team/SKILL.md"), "# Red Team").unwrap();
     std::fs::create_dir_all(claude.join("rules")).unwrap();
@@ -48,10 +52,8 @@ fn test_clone_all() {
     assert!(paths.profile_manifest("full-clone").exists());
 
     // Verify CLAUDE.md was copied.
-    let content = std::fs::read_to_string(
-        paths.profile_files_dir("full-clone").join("CLAUDE.md"),
-    )
-    .unwrap();
+    let content =
+        std::fs::read_to_string(paths.profile_files_dir("full-clone").join("CLAUDE.md")).unwrap();
     assert!(content.contains("Custom content"));
 }
 
@@ -76,22 +78,28 @@ fn test_clone_only_skills() {
     assert!(result.files_skipped > 0);
 
     // Skills should exist.
-    assert!(paths
-        .profile_files_dir("skills-only")
-        .join("skills/red-team/SKILL.md")
-        .exists());
+    assert!(
+        paths
+            .profile_files_dir("skills-only")
+            .join("skills/red-team/SKILL.md")
+            .exists()
+    );
 
     // Rules should NOT exist.
-    assert!(!paths
-        .profile_files_dir("skills-only")
-        .join("rules/security.md")
-        .exists());
+    assert!(
+        !paths
+            .profile_files_dir("skills-only")
+            .join("rules/security.md")
+            .exists()
+    );
 
     // CLAUDE.md should NOT exist (not in --only).
-    assert!(!paths
-        .profile_files_dir("skills-only")
-        .join("CLAUDE.md")
-        .exists());
+    assert!(
+        !paths
+            .profile_files_dir("skills-only")
+            .join("CLAUDE.md")
+            .exists()
+    );
 }
 
 #[test]
@@ -112,24 +120,32 @@ fn test_clone_without_memory() {
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
     // Memory should NOT exist.
-    assert!(!paths
-        .profile_files_dir("no-memory")
-        .join("memory/notes.md")
-        .exists());
+    assert!(
+        !paths
+            .profile_files_dir("no-memory")
+            .join("memory/notes.md")
+            .exists()
+    );
 
     // Everything else should.
-    assert!(paths
-        .profile_files_dir("no-memory")
-        .join("skills/red-team/SKILL.md")
-        .exists());
-    assert!(paths
-        .profile_files_dir("no-memory")
-        .join("rules/security.md")
-        .exists());
-    assert!(paths
-        .profile_files_dir("no-memory")
-        .join("CLAUDE.md")
-        .exists());
+    assert!(
+        paths
+            .profile_files_dir("no-memory")
+            .join("skills/red-team/SKILL.md")
+            .exists()
+    );
+    assert!(
+        paths
+            .profile_files_dir("no-memory")
+            .join("rules/security.md")
+            .exists()
+    );
+    assert!(
+        paths
+            .profile_files_dir("no-memory")
+            .join("CLAUDE.md")
+            .exists()
+    );
 
     assert!(result.files_skipped > 0);
 }
@@ -152,17 +168,17 @@ fn test_clone_fresh_claude_md() {
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
     // CLAUDE.md should exist but be empty.
-    let content = std::fs::read_to_string(
-        paths.profile_files_dir("fresh-md").join("CLAUDE.md"),
-    )
-    .unwrap();
+    let content =
+        std::fs::read_to_string(paths.profile_files_dir("fresh-md").join("CLAUDE.md")).unwrap();
     assert!(content.is_empty());
 
     // Skills should still be there.
-    assert!(paths
-        .profile_files_dir("fresh-md")
-        .join("skills/red-team/SKILL.md")
-        .exists());
+    assert!(
+        paths
+            .profile_files_dir("fresh-md")
+            .join("skills/red-team/SKILL.md")
+            .exists()
+    );
 
     assert!(result.files_cloned > 0);
 }

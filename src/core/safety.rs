@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tracing::warn;
@@ -138,8 +138,7 @@ pub fn acquire_lock(paths: &PortalPaths) -> Result<PortalLock> {
         }
     }
 
-    std::fs::write(&lock_path, format!("{}", std::process::id()))
-        .context("creating lock file")?;
+    std::fs::write(&lock_path, format!("{}", std::process::id())).context("creating lock file")?;
 
     Ok(PortalLock { path: lock_path })
 }

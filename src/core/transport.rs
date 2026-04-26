@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -62,8 +62,7 @@ pub fn import(paths: &PortalPaths, archive_path: &Path, overwrite: bool) -> Resu
     info!("importing from {}", archive_path.display());
 
     // Extract to a temp dir first to validate.
-    let tmp = tempfile::tempdir_in(paths.portal_root())
-        .context("creating temp dir for import")?;
+    let tmp = tempfile::tempdir_in(paths.portal_root()).context("creating temp dir for import")?;
 
     let file = File::open(archive_path)
         .with_context(|| format!("opening archive: {}", archive_path.display()))?;
@@ -101,18 +100,14 @@ pub fn import(paths: &PortalPaths, archive_path: &Path, overwrite: bool) -> Resu
 
     // Validate: must have portal.json
     if !extracted_dir.join("portal.json").exists() {
-        bail!(
-            "Invalid portal archive: profile \"{name}\" is missing portal.json manifest."
-        );
+        bail!("Invalid portal archive: profile \"{name}\" is missing portal.json manifest.");
     }
 
     // Check for existing profile.
     let target_dir = paths.profile_dir(&name);
     if target_dir.exists() {
         if !overwrite {
-            bail!(
-                "Profile \"{name}\" already exists. Use --force to overwrite."
-            );
+            bail!("Profile \"{name}\" already exists. Use --force to overwrite.");
         }
         std::fs::remove_dir_all(&target_dir)
             .with_context(|| format!("removing existing profile \"{name}\""))?;

@@ -38,10 +38,8 @@ fn test_export_and_import() {
     assert!(m.files.contains_key("rules/test.md"));
 
     // Verify file content was preserved.
-    let claude_md = std::fs::read_to_string(
-        paths2.profile_files_dir("export-test").join("CLAUDE.md"),
-    )
-    .unwrap();
+    let claude_md =
+        std::fs::read_to_string(paths2.profile_files_dir("export-test").join("CLAUDE.md")).unwrap();
     assert_eq!(claude_md, "export test config");
 }
 

@@ -1,12 +1,12 @@
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame,
 };
 
-use crate::core::diff::{diff_profiles, DiffSide};
+use crate::core::diff::{DiffSide, diff_profiles};
 
 use super::app::{App, NewProfileMode, View};
 
@@ -49,11 +49,7 @@ fn render_profile_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Profiles "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(" Profiles "))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -67,11 +63,9 @@ fn render_profile_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::
 #[allow(clippy::too_many_lines)]
 fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let Some(profile) = app.selected_profile() else {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Detail ");
-        let empty = Paragraph::new("No profiles found. Press 's' to save current config.")
-            .block(block);
+        let block = Block::default().borders(Borders::ALL).title(" Detail ");
+        let empty =
+            Paragraph::new("No profiles found. Press 's' to save current config.").block(block);
         frame.render_widget(empty, area);
         return;
     };
@@ -95,14 +89,16 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     } else {
         Style::default().bold()
     };
-    let active_tag = if app.is_active(&profile.name) { " ● active" } else { "" };
+    let active_tag = if app.is_active(&profile.name) {
+        " ● active"
+    } else {
+        ""
+    };
 
-    let mut header_lines: Vec<Line<'_>> = vec![
-        Line::from(vec![
-            Span::styled(&m.name, name_style),
-            Span::styled(active_tag, Style::default().fg(Color::Green)),
-        ]),
-    ];
+    let mut header_lines: Vec<Line<'_>> = vec![Line::from(vec![
+        Span::styled(&m.name, name_style),
+        Span::styled(active_tag, Style::default().fg(Color::Green)),
+    ])];
     if !m.description.is_empty() {
         header_lines.push(Line::from(vec![
             Span::styled("  ", dim),
@@ -144,16 +140,22 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     header_lines.push(Line::from(""));
     header_lines.push(Line::from(vec![
         Span::styled("  Files ", label),
-        Span::raw(format!("{} files, {}", m.files.len(), fmt_bytes(total_size))),
+        Span::raw(format!(
+            "{} files, {}",
+            m.files.len(),
+            fmt_bytes(total_size)
+        )),
     ]));
 
-    let header = Paragraph::new(header_lines)
-        .block(Block::default().borders(Borders::TOP | Borders::LEFT | Borders::RIGHT).title(format!(" {} ", profile.name)));
+    let header = Paragraph::new(header_lines).block(
+        Block::default()
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+            .title(format!(" {} ", profile.name)),
+    );
     frame.render_widget(header, header_area);
 
     // ── File tree ──
-    let tree_block = Block::default()
-        .borders(Borders::LEFT | Borders::RIGHT);
+    let tree_block = Block::default().borders(Borders::LEFT | Borders::RIGHT);
 
     let inner = tree_block.inner(tree_area);
     frame.render_widget(tree_block, tree_area);
@@ -168,7 +170,12 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
 
     let rows = &app.tree_rows;
-    for (i, row) in rows.iter().enumerate().skip(scroll_offset).take(visible_height) {
+    for (i, row) in rows
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_height)
+    {
         #[allow(clippy::cast_possible_truncation)]
         let y = inner.y + (i - scroll_offset) as u16;
         if y >= inner.y + inner.height {
@@ -179,7 +186,9 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         let is_selected = i == app.detail_cursor;
 
         let row_style = if is_selected {
-            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -201,11 +210,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(Color::DarkGray),
         );
 
-        let line = Line::from(vec![
-            Span::raw(indent),
-            name_span,
-            size_span,
-        ]);
+        let line = Line::from(vec![Span::raw(indent), name_span, size_span]);
 
         let line_area = ratatui::layout::Rect::new(inner.x, y, inner.width, 1);
         let para = Paragraph::new(line).style(row_style);
@@ -214,12 +219,19 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
 
     // Scroll indicator
     if rows.len() > visible_height {
-        let pct = if rows.is_empty() { 0 } else { (app.detail_cursor * 100) / rows.len() };
+        let pct = if rows.is_empty() {
+            0
+        } else {
+            (app.detail_cursor * 100) / rows.len()
+        };
         let indicator = Paragraph::new(format!(" {pct}%"))
             .style(dim)
             .alignment(ratatui::layout::Alignment::Right);
         let ind_area = ratatui::layout::Rect::new(
-            inner.x, inner.y + inner.height.saturating_sub(1), inner.width, 1
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            1,
         );
         frame.render_widget(indicator, ind_area);
     }
@@ -228,17 +240,26 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     let hint = Style::default().fg(Color::Yellow);
     let footer_lines = vec![
         Line::from(vec![
-            Span::styled(" j/k", hint), Span::raw(" navigate  "),
-            Span::styled("Enter", hint), Span::raw(" expand/collapse  "),
-            Span::styled("l", hint), Span::raw(" load"),
+            Span::styled(" j/k", hint),
+            Span::raw(" navigate  "),
+            Span::styled("Enter", hint),
+            Span::raw(" expand/collapse  "),
+            Span::styled("l", hint),
+            Span::raw(" load"),
         ]),
         Line::from(vec![
-            Span::styled(" Tab", hint), Span::raw(" next profile  "),
-            Span::styled("d", hint), Span::raw(" diff  "),
-            Span::styled("s", hint), Span::raw(" save  "),
-            Span::styled("n", hint), Span::raw(" new  "),
-            Span::styled("c", hint), Span::raw(" clone  "),
-            Span::styled("?", hint), Span::raw(" help"),
+            Span::styled(" Tab", hint),
+            Span::raw(" next profile  "),
+            Span::styled("d", hint),
+            Span::raw(" diff  "),
+            Span::styled("s", hint),
+            Span::raw(" save  "),
+            Span::styled("n", hint),
+            Span::raw(" new  "),
+            Span::styled("c", hint),
+            Span::raw(" clone  "),
+            Span::styled("?", hint),
+            Span::raw(" help"),
         ]),
     ];
     let footer = Paragraph::new(footer_lines)
@@ -308,7 +329,9 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     let added_style = Style::default().fg(Color::Green);
     let removed_style = Style::default().fg(Color::Red);
     let modified_style = Style::default().fg(Color::Yellow);
-    let highlight = Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD);
+    let highlight = Style::default()
+        .bg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -334,19 +357,10 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                 modified_style,
             ),
             Span::raw("  "),
-            Span::styled(
-                format!("+{}", diff_result.only_right.len()),
-                added_style,
-            ),
+            Span::styled(format!("+{}", diff_result.only_right.len()), added_style),
             Span::raw("  "),
-            Span::styled(
-                format!("-{}", diff_result.only_left.len()),
-                removed_style,
-            ),
-            Span::styled(
-                format!("  ={}", diff_result.shared_same.len()),
-                dim,
-            ),
+            Span::styled(format!("-{}", diff_result.only_left.len()), removed_style),
+            Span::styled(format!("  ={}", diff_result.shared_same.len()), dim),
         ]),
     ];
     let header = Paragraph::new(header_lines);
@@ -365,7 +379,11 @@ fn render_diff(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
                 format!("-{}B", fd.left_size - fd.right_size)
             };
             let is_selected = navigable_idx == app.diff_cursor;
-            let row_style = if is_selected { highlight } else { Style::default() };
+            let row_style = if is_selected {
+                highlight
+            } else {
+                Style::default()
+            };
             let marker = if is_selected { "▸ " } else { "  " };
             rows.push(Line::from(vec![
                 Span::styled(marker, if is_selected { modified_style } else { dim }),
@@ -448,7 +466,9 @@ fn render_content_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 
     let added = Style::default().fg(Color::Green);
     let removed = Style::default().fg(Color::Red);
-    let hunk_header = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let hunk_header = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(Color::DarkGray);
 
     let lines: Vec<Line<'_>> = app
@@ -494,9 +514,17 @@ fn render_content_diff(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 }
 
 fn render_save_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Save Current Config ");
+    let is_overwriting_active = app
+        .active_profile
+        .as_deref()
+        .is_some_and(|a| a == app.save_name.trim());
+
+    let title = if is_overwriting_active {
+        " Save Current Config (updates active) "
+    } else {
+        " Save Current Config "
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
 
     let label = Style::default().fg(Color::Cyan);
     let active_field = Style::default().fg(Color::Yellow).bold();
@@ -509,8 +537,17 @@ fn render_save_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
         }
     };
 
+    let intro = if is_overwriting_active {
+        format!(
+            "Updating active profile \"{}\". Tab to change name to fork instead.",
+            app.save_name
+        )
+    } else {
+        "Save current ~/.claude/ as a new profile.".to_string()
+    };
+
     let lines = vec![
-        Line::from("Save current ~/.claude/ as a new profile."),
+        Line::from(intro),
         Line::from(""),
         Line::from(vec![
             Span::styled("Name:  ", label),
@@ -540,7 +577,10 @@ fn render_save_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
             },
         ]),
         Line::from(""),
-        Line::styled("Tab: next field  Enter: save  Esc: cancel", Style::default().fg(Color::Yellow)),
+        Line::styled(
+            "Tab: next field  Enter: save  Esc: cancel",
+            Style::default().fg(Color::Yellow),
+        ),
     ];
 
     let paragraph = Paragraph::new(lines).block(block);
@@ -593,36 +633,28 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
                     Span::styled("):", dim),
                 ]));
                 if !diff.different_content.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  ~ {} modified", diff.different_content.len()),
-                            modified,
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  ~ {} modified", diff.different_content.len()),
+                        modified,
+                    )]));
                 }
                 if !diff.only_right.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  + {} added", diff.only_right.len()),
-                            added,
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  + {} added", diff.only_right.len()),
+                        added,
+                    )]));
                 }
                 if !diff.only_left.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  - {} removed", diff.only_left.len()),
-                            removed,
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  - {} removed", diff.only_left.len()),
+                        removed,
+                    )]));
                 }
                 if !diff.shared_same.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  = {} unchanged", diff.shared_same.len()),
-                            dim,
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  = {} unchanged", diff.shared_same.len()),
+                        dim,
+                    )]));
                 }
             }
         }
@@ -642,9 +674,7 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 
 #[allow(clippy::too_many_lines)]
 fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let source_name = app
-        .selected_profile()
-        .map(|p| p.name.as_str());
+    let source_name = app.selected_profile().map(|p| p.name.as_str());
 
     let title = match app.clone_mode {
         NewProfileMode::Empty => " New Profile ".to_string(),
@@ -653,9 +683,7 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         }
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title);
+    let block = Block::default().borders(Borders::ALL).title(title);
 
     let label = Style::default().fg(Color::Cyan);
     let active_field = Style::default().fg(Color::Yellow).bold();
@@ -673,7 +701,11 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     // Name field (index 0)
-    let name_style = if app.clone_field_index == 0 { active_field } else { Style::default() };
+    let name_style = if app.clone_field_index == 0 {
+        active_field
+    } else {
+        Style::default()
+    };
     let cursor = if app.clone_field_index == 0 { "_" } else { "" };
     lines.push(Line::from(vec![
         ptr(0),
@@ -693,7 +725,11 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
             }
         }
     };
-    let mode_style = if app.clone_field_index == 1 { active_field } else { Style::default() };
+    let mode_style = if app.clone_field_index == 1 {
+        active_field
+    } else {
+        Style::default()
+    };
     lines.push(Line::from(vec![
         ptr(1),
         Span::styled("Mode: ", label),
@@ -709,11 +745,23 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         ]));
 
         let cat_names = [
-            "CLAUDE.md", "Settings", "Skills", "Rules", "Memory",
-            "Commands", "Agents", "Hooks", "Plugins",
+            "CLAUDE.md",
+            "Settings",
+            "Skills",
+            "Rules",
+            "Memory",
+            "Commands",
+            "Agents",
+            "Hooks",
+            "Plugins",
         ];
 
-        for (i, ((_, enabled), name)) in app.clone_categories.iter().zip(cat_names.iter()).enumerate() {
+        for (i, ((_, enabled), name)) in app
+            .clone_categories
+            .iter()
+            .zip(cat_names.iter())
+            .enumerate()
+        {
             let field_idx = i + 2;
             let checkbox = if *enabled { "[x]" } else { "[ ]" };
             // CLAUDE.md category gets a hint when disabled by fresh_md
@@ -764,7 +812,11 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     }
 
     lines.push(Line::from(""));
-    let action = if app.clone_mode == NewProfileMode::Empty { "create" } else { "clone" };
+    let action = if app.clone_mode == NewProfileMode::Empty {
+        "create"
+    } else {
+        "clone"
+    };
     lines.push(Line::from(vec![
         Span::styled("  Tab/↑↓", dim),
         Span::raw(" navigate  "),
@@ -781,35 +833,75 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
 }
 
 fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Help ");
+    let block = Block::default().borders(Borders::ALL).title(" Help ");
 
     let hint = Style::default().fg(Color::Yellow);
 
     let lines = vec![
         Line::from(""),
         Line::styled(" File Tree", Style::default().bold()),
-        Line::from(vec![Span::styled("  j/k     ", hint), Span::raw("navigate files")]),
-        Line::from(vec![Span::styled("  Enter   ", hint), Span::raw("expand/collapse folder")]),
+        Line::from(vec![
+            Span::styled("  j/k     ", hint),
+            Span::raw("navigate files"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter   ", hint),
+            Span::raw("expand/collapse folder"),
+        ]),
         Line::from(""),
         Line::styled(" Profiles", Style::default().bold()),
-        Line::from(vec![Span::styled("  Tab     ", hint), Span::raw("next profile")]),
-        Line::from(vec![Span::styled("  S-Tab   ", hint), Span::raw("previous profile")]),
-        Line::from(vec![Span::styled("  l       ", hint), Span::raw("load selected profile")]),
+        Line::from(vec![
+            Span::styled("  Tab     ", hint),
+            Span::raw("next profile"),
+        ]),
+        Line::from(vec![
+            Span::styled("  S-Tab   ", hint),
+            Span::raw("previous profile"),
+        ]),
+        Line::from(vec![
+            Span::styled("  l       ", hint),
+            Span::raw("load selected profile"),
+        ]),
         Line::from(""),
         Line::styled(" Diff Mode (d to enter)", Style::default().bold()),
-        Line::from(vec![Span::styled("  j/k     ", hint), Span::raw("navigate modified files")]),
-        Line::from(vec![Span::styled("  Enter   ", hint), Span::raw("view file content diff")]),
-        Line::from(vec![Span::styled("  Esc     ", hint), Span::raw("back to detail view")]),
+        Line::from(vec![
+            Span::styled("  j/k     ", hint),
+            Span::raw("navigate modified files"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter   ", hint),
+            Span::raw("view file content diff"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc     ", hint),
+            Span::raw("back to detail view"),
+        ]),
         Line::from(""),
         Line::styled(" Actions", Style::default().bold()),
-        Line::from(vec![Span::styled("  d       ", hint), Span::raw("diff selected vs active")]),
-        Line::from(vec![Span::styled("  s       ", hint), Span::raw("save current config")]),
-        Line::from(vec![Span::styled("  n       ", hint), Span::raw("new profile (empty or clone)")]),
-        Line::from(vec![Span::styled("  c       ", hint), Span::raw("clone selected profile")]),
-        Line::from(vec![Span::styled("  Esc     ", hint), Span::raw("back / cancel")]),
-        Line::from(vec![Span::styled("  ?       ", hint), Span::raw("toggle help")]),
+        Line::from(vec![
+            Span::styled("  d       ", hint),
+            Span::raw("diff selected vs active"),
+        ]),
+        Line::from(vec![
+            Span::styled("  s       ", hint),
+            Span::raw("save current config"),
+        ]),
+        Line::from(vec![
+            Span::styled("  n       ", hint),
+            Span::raw("new profile (empty or clone)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  c       ", hint),
+            Span::raw("clone selected profile"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc     ", hint),
+            Span::raw("back / cancel"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?       ", hint),
+            Span::raw("toggle help"),
+        ]),
         Line::from(vec![Span::styled("  q       ", hint), Span::raw("quit")]),
     ];
 
@@ -818,10 +910,7 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let active = app
-        .active_profile
-        .as_deref()
-        .unwrap_or("none");
+    let active = app.active_profile.as_deref().unwrap_or("none");
 
     let status_text = app.status_message.as_ref().map_or_else(
         || {
@@ -833,7 +922,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
         Clone::clone,
     );
 
-    let bar = Paragraph::new(status_text)
-        .style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    let bar =
+        Paragraph::new(status_text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(bar, area);
 }

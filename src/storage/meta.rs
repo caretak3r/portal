@@ -10,8 +10,7 @@ use std::path::Path;
 pub fn read(path: &Path) -> Result<ProfileMeta> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading meta: {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("parsing meta: {}", path.display()))
+    serde_json::from_str(&content).with_context(|| format!("parsing meta: {}", path.display()))
 }
 
 /// Write profile metadata to disk as pretty-printed JSON.
@@ -26,6 +25,5 @@ pub fn write(path: &Path, meta: &ProfileMeta) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, content)
-        .with_context(|| format!("writing meta: {}", path.display()))
+    std::fs::write(path, content).with_context(|| format!("writing meta: {}", path.display()))
 }

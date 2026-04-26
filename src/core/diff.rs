@@ -1,5 +1,5 @@
 use crate::storage::{manifest, paths::PortalPaths};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 
 /// Which side of a diff comparison to resolve.
@@ -175,20 +175,19 @@ fn resolve_side(
 }
 
 /// Read a file's content from a profile's stored files directory.
-fn read_file_from_side(paths: &PortalPaths, side: &DiffSide<'_>, file_path: &str) -> Result<String> {
+fn read_file_from_side(
+    paths: &PortalPaths,
+    side: &DiffSide<'_>,
+    file_path: &str,
+) -> Result<String> {
     match side {
         DiffSide::Profile(name) => {
             let full = paths.profile_files_dir(name).join(file_path);
             if !full.exists() {
-                bail!(
-                    "File \"{file_path}\" not found in profile \"{name}\"."
-                );
+                bail!("File \"{file_path}\" not found in profile \"{name}\".");
             }
-            std::fs::read_to_string(&full).map_err(|e| {
-                anyhow::anyhow!(
-                    "reading {file_path} from profile \"{name}\": {e}"
-                )
-            })
+            std::fs::read_to_string(&full)
+                .map_err(|e| anyhow::anyhow!("reading {file_path} from profile \"{name}\": {e}"))
         }
         DiffSide::Skeleton => {
             // Skeleton has no profile-specific files — return empty string

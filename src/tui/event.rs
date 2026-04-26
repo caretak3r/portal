@@ -108,7 +108,10 @@ fn handle_main(app: &mut App, code: KeyCode) {
             };
         }
         KeyCode::Char('s') => {
-            app.save_name.clear();
+            // Pre-fill name with the active profile so pressing `s` and Enter
+            // saves over the loaded profile (game-save semantics). User can
+            // backspace and type a different name to fork instead.
+            app.save_name = app.active_profile.clone().unwrap_or_default();
             app.save_description.clear();
             app.save_tags.clear();
             app.save_field_index = 0;
@@ -313,12 +316,10 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
         KeyCode::Char(c) if app.clone_field_index == 0 => {
             app.clone_name.push(c);
         }
-        KeyCode::Enter => {
-            match app.clone_mode {
-                NewProfileMode::Empty => execute_new_empty(app),
-                NewProfileMode::CloneFrom => execute_clone(app),
-            }
-        }
+        KeyCode::Enter => match app.clone_mode {
+            NewProfileMode::Empty => execute_new_empty(app),
+            NewProfileMode::CloneFrom => execute_clone(app),
+        },
         _ => {}
     }
 }

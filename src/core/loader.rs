@@ -1,7 +1,7 @@
 use crate::core::progress::ProgressReporter;
 use crate::core::{backup, checksum, plugins, safety, skeleton};
 use crate::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -35,7 +35,13 @@ pub fn load(
     no_plugins: bool,
     skip_claude_check: bool,
 ) -> Result<LoadResult> {
-    load_with_progress(paths, profile_name, no_plugins, skip_claude_check, &super::progress::NoProgress)
+    load_with_progress(
+        paths,
+        profile_name,
+        no_plugins,
+        skip_claude_check,
+        &super::progress::NoProgress,
+    )
 }
 
 /// Load a saved profile into `~/.claude/` via atomic swap with progress reporting.
@@ -99,8 +105,8 @@ pub fn load_with_progress(
     };
 
     // 5. Build target in tempdir.
-    let tmp = tempfile::tempdir_in(paths.portal_root())
-        .context("creating temp dir for profile build")?;
+    let tmp =
+        tempfile::tempdir_in(paths.portal_root()).context("creating temp dir for profile build")?;
     let build_dir = tmp.path().join("claude");
     std::fs::create_dir_all(&build_dir).context("creating build dir")?;
 
@@ -198,8 +204,7 @@ pub fn load_with_progress(
 fn copy_dir_with_progress(src: &Path, dst: &Path, progress: &dyn ProgressReporter) -> Result<()> {
     let mut count: u64 = 0;
     for entry in WalkDir::new(src).min_depth(1) {
-        let entry =
-            entry.with_context(|| format!("walking directory: {}", src.display()))?;
+        let entry = entry.with_context(|| format!("walking directory: {}", src.display()))?;
         let rel = entry
             .path()
             .strip_prefix(src)
@@ -215,11 +220,7 @@ fn copy_dir_with_progress(src: &Path, dst: &Path, progress: &dyn ProgressReporte
                     .with_context(|| format!("creating parent: {}", parent.display()))?;
             }
             std::fs::copy(entry.path(), &target).with_context(|| {
-                format!(
-                    "copying {} -> {}",
-                    entry.path().display(),
-                    target.display()
-                )
+                format!("copying {} -> {}", entry.path().display(), target.display())
             })?;
             count += 1;
             progress.tick(count, &rel.to_string_lossy());
@@ -240,8 +241,7 @@ fn copy_dir_with_progress(src: &Path, dst: &Path, progress: &dyn ProgressReporte
 /// file copy operations fail.
 pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     for entry in WalkDir::new(src).min_depth(1) {
-        let entry =
-            entry.with_context(|| format!("walking directory: {}", src.display()))?;
+        let entry = entry.with_context(|| format!("walking directory: {}", src.display()))?;
         let rel = entry
             .path()
             .strip_prefix(src)
@@ -257,11 +257,7 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
                     .with_context(|| format!("creating parent: {}", parent.display()))?;
             }
             std::fs::copy(entry.path(), &target).with_context(|| {
-                format!(
-                    "copying {} -> {}",
-                    entry.path().display(),
-                    target.display()
-                )
+                format!("copying {} -> {}", entry.path().display(), target.display())
             })?;
         }
     }

@@ -10,8 +10,7 @@ use std::path::Path;
 pub fn read(path: &Path) -> Result<ProfileManifest> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading manifest: {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("parsing manifest: {}", path.display()))
+    serde_json::from_str(&content).with_context(|| format!("parsing manifest: {}", path.display()))
 }
 
 /// Write a profile manifest to disk as pretty-printed JSON.
@@ -26,6 +25,5 @@ pub fn write(path: &Path, manifest: &ProfileManifest) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, content)
-        .with_context(|| format!("writing manifest: {}", path.display()))
+    std::fs::write(path, content).with_context(|| format!("writing manifest: {}", path.display()))
 }

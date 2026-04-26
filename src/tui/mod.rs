@@ -2,8 +2,8 @@ mod app;
 mod event;
 mod ui;
 
-use anyhow::Result;
 use crate::storage::paths::PortalPaths;
+use anyhow::Result;
 
 /// Launch the interactive TUI profile browser.
 ///
