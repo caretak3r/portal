@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use portal::core::profile::FileSource;
 use portal::core::skeleton;
 use portal::core::snapshot;
@@ -35,8 +37,7 @@ fn test_save_profile() {
             .exists()
     );
 
-    let read_manifest =
-        manifest::read(&paths.profile_manifest("test-profile")).unwrap();
+    let read_manifest = manifest::read(&paths.profile_manifest("test-profile")).unwrap();
 
     assert!(read_manifest.files.contains_key("CLAUDE.md"));
     assert!(read_manifest.files.contains_key("rules/test.md"));
@@ -86,6 +87,101 @@ fn test_is_excluded() {
 }
 
 #[test]
+fn test_save_overwrite_preserves_metadata() {
+    // Re-saving a profile by name should keep created_at, load_count,
+    // and last_loaded so it behaves like "save game" (same identity).
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = PortalPaths::with_home(tmp.path().to_path_buf());
+    paths.ensure_dirs().unwrap();
+
+    let claude = paths.claude_root();
+    skeleton::create(&claude).unwrap();
+    std::fs::write(claude.join("CLAUDE.md"), "v1").unwrap();
+
+    let first = snapshot::save(&paths, "wip", "first description", &["a".into()]).unwrap();
+    let original_created = first.created_at;
+
+    // Hand-edit the manifest to simulate the profile having been loaded once.
+    let manifest_path = paths.profile_manifest("wip");
+    let mut m = manifest::read(&manifest_path).unwrap();
+    m.load_count = 5;
+    m.last_loaded = Some(chrono::Utc::now());
+    manifest::write(&manifest_path, &m).unwrap();
+    let load_marker = m.last_loaded;
+
+    // Mutate the working copy and re-save with empty description/tags —
+    // should preserve everything from the existing manifest.
+    std::fs::write(claude.join("CLAUDE.md"), "v2").unwrap();
+    let second = snapshot::save(&paths, "wip", "", &[]).unwrap();
+
+    assert_eq!(second.created_at, original_created, "created_at preserved");
+    assert_eq!(second.load_count, 5, "load_count preserved");
+    assert_eq!(second.last_loaded, load_marker, "last_loaded preserved");
+    assert_eq!(
+        second.description, "first description",
+        "description preserved when empty"
+    );
+    assert_eq!(
+        second.tags,
+        vec!["a".to_string()],
+        "tags preserved when empty"
+    );
+
+    // Content actually updated though.
+    let claude_md = paths.profile_files_dir("wip").join("CLAUDE.md");
+    assert_eq!(std::fs::read_to_string(claude_md).unwrap(), "v2");
+}
+
+#[test]
+fn test_save_overwrite_replaces_description_when_provided() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = PortalPaths::with_home(tmp.path().to_path_buf());
+    paths.ensure_dirs().unwrap();
+
+    let claude = paths.claude_root();
+    skeleton::create(&claude).unwrap();
+
+    snapshot::save(&paths, "p", "old desc", &["t1".into()]).unwrap();
+    let updated = snapshot::save(&paths, "p", "new desc", &["t2".into()]).unwrap();
+
+    assert_eq!(updated.description, "new desc");
+    assert_eq!(updated.tags, vec!["t2".to_string()]);
+}
+
+#[test]
+fn test_save_overwrite_removes_orphan_files() {
+    // Files that existed in the previous snapshot but aren't in the current
+    // .claude/ should not linger in the profile's files/ directory.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let paths = PortalPaths::with_home(tmp.path().to_path_buf());
+    paths.ensure_dirs().unwrap();
+
+    let claude = paths.claude_root();
+    skeleton::create(&claude).unwrap();
+    std::fs::create_dir_all(claude.join("rules")).unwrap();
+    std::fs::write(claude.join("rules/keep.md"), "keep me").unwrap();
+    std::fs::write(claude.join("rules/orphan.md"), "delete me").unwrap();
+
+    snapshot::save(&paths, "p", "", &[]).unwrap();
+    let files_dir = paths.profile_files_dir("p");
+    assert!(files_dir.join("rules/orphan.md").exists());
+
+    // Remove the file from .claude/ and re-save.
+    std::fs::remove_file(claude.join("rules/orphan.md")).unwrap();
+    let updated = snapshot::save(&paths, "p", "", &[]).unwrap();
+
+    assert!(
+        files_dir.join("rules/keep.md").exists(),
+        "kept file remains"
+    );
+    assert!(
+        !files_dir.join("rules/orphan.md").exists(),
+        "orphan file removed from profile files/"
+    );
+    assert!(!updated.files.contains_key("rules/orphan.md"));
+}
+
+#[test]
 fn test_skeleton_files_classified_correctly() {
     let tmp = tempfile::TempDir::new().unwrap();
     let paths = PortalPaths::with_home(tmp.path().to_path_buf());
@@ -97,10 +193,7 @@ fn test_skeleton_files_classified_correctly() {
     // Default skeleton files should be FileSource::Skeleton.
     let result = snapshot::save(&paths, "skel-class", "Classify test", &[]).unwrap();
 
-    assert_eq!(
-        result.files["settings.json"].source,
-        FileSource::Skeleton
-    );
+    assert_eq!(result.files["settings.json"].source, FileSource::Skeleton);
     assert_eq!(
         result.files[".claude/settings.local.json"].source,
         FileSource::Skeleton

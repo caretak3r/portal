@@ -3,7 +3,7 @@ use crate::core::plugins;
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
 use crate::core::progress::ProgressReporter;
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -64,9 +64,8 @@ pub fn scan_trackable_files(claude_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     for entry in WalkDir::new(claude_dir).min_depth(1) {
-        let entry = entry.with_context(|| {
-            format!("walking directory: {}", claude_dir.display())
-        })?;
+        let entry =
+            entry.with_context(|| format!("walking directory: {}", claude_dir.display()))?;
 
         if !entry.file_type().is_file() {
             continue;
@@ -143,14 +142,25 @@ pub fn save_with_progress(
 ) -> Result<ProfileManifest> {
     let claude_dir = paths.claude_root();
     if !claude_dir.is_dir() {
-        bail!(
-            ".claude/ directory not found at {}",
-            claude_dir.display()
-        );
+        bail!(".claude/ directory not found at {}", claude_dir.display());
     }
 
-    // Create profile directories.
+    // If overwriting an existing profile, read its manifest so we can preserve
+    // metadata (created_at, load_count, last_loaded) and any description/tags
+    // the caller didn't explicitly override.
+    let manifest_path = paths.profile_manifest(name);
+    let existing = if manifest_path.exists() {
+        manifest::read(&manifest_path).ok()
+    } else {
+        None
+    };
+
+    // Clear stale files so an overwrite removes orphans from the previous snapshot.
     let files_dir = paths.profile_files_dir(name);
+    if files_dir.exists() {
+        std::fs::remove_dir_all(&files_dir)
+            .with_context(|| format!("clearing old files dir: {}", files_dir.display()))?;
+    }
     std::fs::create_dir_all(&files_dir)
         .with_context(|| format!("creating profile files dir: {}", files_dir.display()))?;
 
@@ -174,8 +184,7 @@ pub fn save_with_progress(
                 .with_context(|| format!("creating parent dir: {}", parent.display()))?;
         }
 
-        std::fs::copy(&src, &dst)
-            .with_context(|| format!("copying file: {}", rel.display()))?;
+        std::fs::copy(&src, &dst).with_context(|| format!("copying file: {}", rel.display()))?;
 
         let hash = checksum::sha256_file(&dst)?;
         let meta = std::fs::metadata(&dst)
@@ -196,14 +205,36 @@ pub fn save_with_progress(
         );
     }
 
+    // When overwriting, preserve historical metadata and any description/tags
+    // the caller left empty. This makes `save` behave like a "save game":
+    // re-snapshotting the active profile keeps its identity.
+    let (created_at, load_count, last_loaded, final_description, final_tags) = match existing {
+        Some(old) => (
+            old.created_at,
+            old.load_count,
+            old.last_loaded,
+            if description.is_empty() {
+                old.description
+            } else {
+                description.to_string()
+            },
+            if tags.is_empty() {
+                old.tags
+            } else {
+                tags.to_vec()
+            },
+        ),
+        None => (Utc::now(), 0, None, description.to_string(), tags.to_vec()),
+    };
+
     let manifest = ProfileManifest {
         version: 1,
         name: name.to_string(),
-        created_at: Utc::now(),
-        last_loaded: None,
-        load_count: 0,
-        description: description.to_string(),
-        tags: tags.to_vec(),
+        created_at,
+        last_loaded,
+        load_count,
+        description: final_description.clone(),
+        tags: final_tags.clone(),
         files: entries,
         excluded_patterns: EXCLUDED_PATTERNS.iter().map(|s| (*s).to_string()).collect(),
     };
@@ -217,8 +248,8 @@ pub fn save_with_progress(
 
     // Write metadata.
     let profile_meta = ProfileMeta {
-        description: description.to_string(),
-        tags: tags.to_vec(),
+        description: final_description,
+        tags: final_tags,
         notes: None,
         created_by: whoami(),
     };

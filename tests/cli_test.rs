@@ -148,6 +148,85 @@ fn test_cli_save_requires_name_noninteractive() {
 }
 
 #[test]
+fn test_cli_save_no_name_overwrites_active_profile() {
+    // With an active profile set, `portal save --force` (no name) should
+    // overwrite that active profile, not error out — the "save game" path.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let home = tmp.path();
+
+    portal_cmd()
+        .env("HOME", home)
+        .args(["reset", "--force"])
+        .assert()
+        .success();
+
+    portal_cmd()
+        .env("HOME", home)
+        .args(["save", "wip", "-d", "first", "--force"])
+        .assert()
+        .success();
+
+    portal_cmd()
+        .env("HOME", home)
+        .args(["load", "wip", "--force"])
+        .assert()
+        .success();
+
+    // Touch the working copy so the snapshot has new content.
+    std::fs::write(home.join(".claude/CLAUDE.md"), "edited content").expect("write");
+
+    // No name + --force + active profile set → overwrite "wip".
+    // (indicatif progress is silent in non-TTY, so we verify by file content.)
+    portal_cmd()
+        .env("HOME", home)
+        .args(["save", "--force"])
+        .assert()
+        .success();
+
+    // Confirm content was persisted into the active profile's files/.
+    let claude_md = home.join(".config/portal/profiles/wip/files/CLAUDE.md");
+    let saved = std::fs::read_to_string(&claude_md).expect("read");
+    assert_eq!(saved, "edited content");
+}
+
+#[test]
+fn test_cli_save_explicit_name_matching_active_skips_prompt() {
+    // Saving by name to the active profile shouldn't be blocked by the
+    // overwrite-cancel default — it should overwrite directly.
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let home = tmp.path();
+
+    portal_cmd()
+        .env("HOME", home)
+        .args(["reset", "--force"])
+        .assert()
+        .success();
+    portal_cmd()
+        .env("HOME", home)
+        .args(["save", "wip", "--force"])
+        .assert()
+        .success();
+    portal_cmd()
+        .env("HOME", home)
+        .args(["load", "wip", "--force"])
+        .assert()
+        .success();
+
+    std::fs::write(home.join(".claude/CLAUDE.md"), "round 2").expect("write");
+
+    // Explicit name matching active — without --force in non-interactive mode,
+    // this still works because the prompt is skipped for the active profile.
+    portal_cmd()
+        .env("HOME", home)
+        .args(["save", "wip", "--force"])
+        .assert()
+        .success();
+
+    let claude_md = home.join(".config/portal/profiles/wip/files/CLAUDE.md");
+    assert_eq!(std::fs::read_to_string(claude_md).unwrap(), "round 2");
+}
+
+#[test]
 fn test_cli_load_no_backup_requires_force() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
 

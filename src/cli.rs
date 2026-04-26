@@ -1,9 +1,11 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use console::style;
 
 use portal::core::progress::ProgressReporter;
-use portal::core::{backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport};
+use portal::core::{
+    backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport,
+};
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
 /// Configuration transport layer for Claude Code.
@@ -166,7 +168,9 @@ pub fn run() -> Result<()> {
         Some(Commands::Verify { name, fix_plugins }) => {
             cmd_verify(&cli, &paths, name.as_deref(), *fix_plugins)
         }
-        Some(Commands::Export { name, output }) => cmd_export(&cli, &paths, name, output.as_deref()),
+        Some(Commands::Export { name, output }) => {
+            cmd_export(&cli, &paths, name, output.as_deref())
+        }
         Some(Commands::Import { path }) => cmd_import(&cli, &paths, path),
         Some(Commands::Clone {
             source,
@@ -218,46 +222,19 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
             "  {}       Save current .claude/ as a profile",
             style("save").green()
         );
-        println!(
-            "  {}       Load a saved profile",
-            style("load").green()
-        );
-        println!(
-            "  {}       List all profiles",
-            style("list").green()
-        );
-        println!(
-            "  {}       Show profile details",
-            style("show").green()
-        );
-        println!(
-            "  {}       Compare two profiles",
-            style("diff").green()
-        );
-        println!(
-            "  {}         Delete a profile",
-            style("rm").green()
-        );
+        println!("  {}       Load a saved profile", style("load").green());
+        println!("  {}       List all profiles", style("list").green());
+        println!("  {}       Show profile details", style("show").green());
+        println!("  {}       Compare two profiles", style("diff").green());
+        println!("  {}         Delete a profile", style("rm").green());
         println!(
             "  {}      Reset .claude/ to skeleton",
             style("reset").green()
         );
-        println!(
-            "  {}       Undo last load/reset",
-            style("undo").green()
-        );
-        println!(
-            "  {}     Show current state",
-            style("status").green()
-        );
-        println!(
-            "  {}     Rename a profile",
-            style("rename").green()
-        );
-        println!(
-            "  {}     Verify profile integrity",
-            style("verify").green()
-        );
+        println!("  {}       Undo last load/reset", style("undo").green());
+        println!("  {}     Show current state", style("status").green());
+        println!("  {}     Rename a profile", style("rename").green());
+        println!("  {}     Verify profile integrity", style("verify").green());
         println!(
             "  {}     Export profile to archive",
             style("export").green()
@@ -292,8 +269,31 @@ fn cmd_save(
     description: &str,
     tags: &[String],
 ) -> Result<()> {
+    // The active profile (if any) — determines whether we're "saving over a
+    // game we're already playing" and lets us default to overwriting it.
+    let active = state::read(&paths.state_file())
+        .ok()
+        .and_then(|s| s.active_profile);
+
     let name = if let Some(n) = name {
         n.to_string()
+    } else if let Some(active_name) = active.clone() {
+        // No name given: default to overwriting the active profile.
+        if cli.force || !is_interactive() {
+            active_name
+        } else {
+            let confirm = dialoguer::Confirm::new()
+                .with_prompt(format!("Save changes to active profile \"{active_name}\"?"))
+                .default(true)
+                .interact()?;
+            if confirm {
+                active_name
+            } else {
+                dialoguer::Input::<String>::new()
+                    .with_prompt("Profile name")
+                    .interact_text()?
+            }
+        }
     } else {
         if cli.force || !is_interactive() {
             bail!("Profile name required (use --force or provide NAME).");
@@ -309,21 +309,27 @@ fn cmd_save(
 
     paths.ensure_dirs()?;
 
-    // Check if profile already exists.
-    if paths.profile_dir(&name).exists() && !cli.force {
+    let is_active = active.as_deref() == Some(name.as_str());
+
+    // Existing profile + not the active one + not --force: confirm overwrite.
+    // Overwriting the *active* profile is the natural action for `portal save`
+    // (like saving over a running game), so we don't gate it behind a prompt.
+    if paths.profile_dir(&name).exists() && !cli.force && !is_active {
         if !is_interactive() {
             bail!("Profile \"{name}\" already exists. Use --force to overwrite.");
         }
         let choice = dialoguer::Select::new()
             .with_prompt(format!("Profile \"{name}\" already exists"))
-            .items(&["Overwrite (replace entirely)", "Merge (keep new, update changed)", "Cancel"])
+            .items(&[
+                "Overwrite (replace entirely)",
+                "Merge (keep new, update changed)",
+                "Cancel",
+            ])
             .default(2)
             .interact()?;
         match choice {
-            // Both overwrite and merge: fall through to save.
-            // Save will overwrite files. Merge keeps the existing profile
-            // directory; overwrite behavior is the same since save replaces
-            // file contents and rebuilds the manifest.
+            // Both overwrite and merge fall through; save rebuilds the
+            // manifest and replaces files either way.
             0 | 1 => {}
             _ => {
                 println!("{}", style("Aborted.").yellow());
@@ -341,15 +347,14 @@ fn cmd_save(
         return Ok(());
     }
 
-    let progress = CliProgress::new("Saving");
+    let progress = CliProgress::new(if is_active { "Updating" } else { "Saving" });
     let result = snapshot::save_with_progress(paths, &name, description, tags, &progress)?;
-    progress.finish(
-        &format!(
-            "Saved profile \"{}\" ({} files)",
-            style(&name).green().bold(),
-            result.files.len()
-        ),
-    );
+    progress.finish(&format!(
+        "{} profile \"{}\" ({} files)",
+        if is_active { "Updated" } else { "Saved" },
+        style(&name).green().bold(),
+        result.files.len()
+    ));
 
     if cli.verbose {
         for (path, entry) in &result.files {
@@ -382,13 +387,11 @@ fn cmd_load(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
 
     let progress = CliProgress::new("Loading");
     let result = loader::load_with_progress(paths, name, cli.no_plugins, cli.force, &progress)?;
-    progress.finish(
-        &format!(
-            "Loaded profile \"{}\" ({} files)",
-            style(&result.profile).green().bold(),
-            result.files_loaded
-        ),
-    );
+    progress.finish(&format!(
+        "Loaded profile \"{}\" ({} files)",
+        style(&result.profile).green().bold(),
+        result.files_loaded
+    ));
 
     if !result.plugin_results.is_empty() && !cli.quiet {
         println!();
@@ -574,10 +577,7 @@ fn cmd_show(_cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
             portal::core::profile::FileSource::User => "",
             portal::core::profile::FileSource::Skeleton => " (skeleton)",
         };
-        println!(
-            "    {path} {:>6}{source_tag}",
-            format_size(entry.size)
-        );
+        println!("    {path} {:>6}{source_tag}", format_size(entry.size));
     }
 
     Ok(())
@@ -593,8 +593,7 @@ fn cmd_diff(
     file: Option<&str>,
 ) -> Result<()> {
     let left = diff::DiffSide::Profile(a);
-    let right =
-        b.map_or(diff::DiffSide::Skeleton, diff::DiffSide::Profile);
+    let right = b.map_or(diff::DiffSide::Skeleton, diff::DiffSide::Profile);
 
     // Content diff for a specific file.
     if let Some(file_path) = file {
@@ -679,9 +678,7 @@ fn cmd_rm(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
             bail!("Refusing to delete without confirmation. Use --force.");
         }
         let confirm = dialoguer::Confirm::new()
-            .with_prompt(format!(
-                "Delete profile \"{name}\"? This cannot be undone"
-            ))
+            .with_prompt(format!("Delete profile \"{name}\"? This cannot be undone"))
             .default(false)
             .interact()?;
         if !confirm {
@@ -705,10 +702,7 @@ fn cmd_rm(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
         state::write(&state_path, &portal_state)?;
     }
 
-    println!(
-        "{} Deleted profile \"{name}\"",
-        style("✓").green().bold(),
-    );
+    println!("{} Deleted profile \"{name}\"", style("✓").green().bold(),);
 
     Ok(())
 }
@@ -721,9 +715,7 @@ fn cmd_reset(cli: &Cli, paths: &PortalPaths) -> Result<()> {
             bail!("Refusing to reset without confirmation. Use --force.");
         }
         let confirm = dialoguer::Confirm::new()
-            .with_prompt(
-                "Reset .claude/ to skeleton? Current configuration will be backed up",
-            )
+            .with_prompt("Reset .claude/ to skeleton? Current configuration will be backed up")
             .default(false)
             .interact()?;
         if !confirm {
@@ -771,10 +763,7 @@ fn cmd_reset(cli: &Cli, paths: &PortalPaths) -> Result<()> {
     }
     state::write(&state_path, &portal_state)?;
 
-    println!(
-        "{} Reset .claude/ to skeleton",
-        style("✓").green().bold(),
-    );
+    println!("{} Reset .claude/ to skeleton", style("✓").green().bold(),);
     if let Some(bp) = backup_path {
         println!("  Backup: {}", style(bp.display()).dim());
     }
@@ -865,10 +854,7 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
                         format_size(total_size)
                     );
                     if let Some(loaded) = m.last_loaded {
-                        println!(
-                            "  Last loaded:    {}",
-                            loaded.format("%Y-%m-%d %H:%M UTC")
-                        );
+                        println!("  Last loaded:    {}", loaded.format("%Y-%m-%d %H:%M UTC"));
                     }
 
                     // Integrity check against stored profile.
@@ -889,10 +875,7 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
                             );
                         }
                         Err(_) => {
-                            println!(
-                                "  Integrity:      {}",
-                                style("error reading files").red()
-                            );
+                            println!("  Integrity:      {}", style("error reading files").red());
                         }
                     }
 
@@ -900,10 +883,7 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
                     let plugins_path = paths.profile_plugins(name);
                     if plugins_path.exists() {
                         if let Ok(bp) = plugins_manifest::read(&plugins_path) {
-                            println!(
-                                "  Plugins:        {} blueprinted",
-                                bp.plugins.len()
-                            );
+                            println!("  Plugins:        {} blueprinted", bp.plugins.len());
                         }
                     }
                 }
@@ -916,10 +896,7 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
 
     if let Some(ref op) = portal_state.last_operation {
         println!();
-        println!(
-            "  Last operation: {:?} \"{}\"",
-            op.op_type, op.profile
-        );
+        println!("  Last operation: {:?} \"{}\"", op.op_type, op.profile);
         println!(
             "  Timestamp:      {}",
             op.timestamp.format("%Y-%m-%d %H:%M UTC")
@@ -951,10 +928,7 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
             "  {} .claude.portal-old exists; previous swap may have crashed",
             style("WARNING:").red().bold()
         );
-        println!(
-            "  Run {} to recover.",
-            style("portal recover").bold()
-        );
+        println!("  Run {} to recover.", style("portal recover").bold());
     }
 
     // Count profiles.
@@ -1054,10 +1028,7 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>, fix_plugins: b
     let plugins_path = paths.profile_plugins(&name);
     if plugins_path.exists() {
         if let Ok(bp) = plugins_manifest::read(&plugins_path) {
-            println!(
-                "  Plugins:   {} blueprinted",
-                bp.plugins.len()
-            );
+            println!("  Plugins:   {} blueprinted", bp.plugins.len());
             if fix_plugins && !bp.plugins.is_empty() {
                 println!();
                 println!("  {}", style("Reinstalling plugins...").bold());
@@ -1115,8 +1086,14 @@ fn cmd_clone(
 
     if cli.dry_run {
         let label = match (&only_cats, &without_cats) {
-            (Some(cats), _) => format!("only {:?}", cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()),
-            (_, Some(cats)) => format!("without {:?}", cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()),
+            (Some(cats), _) => format!(
+                "only {:?}",
+                cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()
+            ),
+            (_, Some(cats)) => format!(
+                "without {:?}",
+                cats.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>()
+            ),
             _ => "all categories".to_string(),
         };
         println!(
@@ -1124,7 +1101,11 @@ fn cmd_clone(
             source,
             target,
             label,
-            if fresh_claude_md { ", fresh CLAUDE.md" } else { "" }
+            if fresh_claude_md {
+                ", fresh CLAUDE.md"
+            } else {
+                ""
+            }
         );
         return Ok(());
     }
@@ -1142,13 +1123,11 @@ fn cmd_clone(
 
     let progress = CliProgress::new("Cloning");
     let result = clone::clone_profile_with_progress(paths, &opts, &progress)?;
-    progress.finish(
-        &format!(
-            "Cloned \"{}\" -> \"{}\"",
-            style(&result.source).cyan(),
-            style(&result.target).green().bold(),
-        ),
-    );
+    progress.finish(&format!(
+        "Cloned \"{}\" -> \"{}\"",
+        style(&result.source).cyan(),
+        style(&result.target).green().bold(),
+    ));
 
     println!(
         "  {} files cloned, {} skipped",
@@ -1178,7 +1157,10 @@ fn cmd_export(cli: &Cli, paths: &PortalPaths, name: &str, output: Option<&str>) 
         } else {
             output_path
         };
-        println!("[dry-run] Would export profile \"{name}\" to {}", target.display());
+        println!(
+            "[dry-run] Would export profile \"{name}\" to {}",
+            target.display()
+        );
         return Ok(());
     }
 
@@ -1204,7 +1186,10 @@ fn cmd_import(cli: &Cli, paths: &PortalPaths, archive: &str) -> Result<()> {
     let archive_path = std::path::Path::new(archive);
 
     if cli.dry_run {
-        println!("[dry-run] Would import profile from {}", archive_path.display());
+        println!(
+            "[dry-run] Would import profile from {}",
+            archive_path.display()
+        );
         return Ok(());
     }
 
@@ -1222,11 +1207,7 @@ fn cmd_import(cli: &Cli, paths: &PortalPaths, archive: &str) -> Result<()> {
     if manifest_path.exists() {
         if let Ok(m) = manifest::read(&manifest_path) {
             let total_size: u64 = m.files.values().map(|f| f.size).sum();
-            println!(
-                "  {} files ({})",
-                m.files.len(),
-                format_size(total_size)
-            );
+            println!("  {} files ({})", m.files.len(), format_size(total_size));
         }
     }
 
@@ -1281,10 +1262,7 @@ fn cmd_recover(cli: &Cli, paths: &PortalPaths) -> Result<()> {
             match choice {
                 0 => {
                     std::fs::remove_dir_all(&old_dir)?;
-                    println!(
-                        "{} Removed .claude.portal-old",
-                        style("✓").green().bold()
-                    );
+                    println!("{} Removed .claude.portal-old", style("✓").green().bold());
                 }
                 1 => {
                     if claude_dir.exists() {
@@ -1373,11 +1351,9 @@ impl CliProgress {
     fn new(prefix: &str) -> Self {
         let pb = indicatif::ProgressBar::new(0);
         pb.set_style(
-            indicatif::ProgressStyle::with_template(
-                "{spinner:.cyan} {prefix} [{pos}/{len}] {msg}"
-            )
-            .expect("valid template")
-            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            indicatif::ProgressStyle::with_template("{spinner:.cyan} {prefix} [{pos}/{len}] {msg}")
+                .expect("valid template")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.set_prefix(prefix.to_string());
         pb.enable_steady_tick(std::time::Duration::from_millis(80));
@@ -1396,6 +1372,7 @@ impl portal::core::progress::ProgressReporter for CliProgress {
     }
 
     fn finish(&self, message: &str) {
-        self.pb.finish_with_message(format!("{} {message}", style("✓").green().bold()));
+        self.pb
+            .finish_with_message(format!("{} {message}", style("✓").green().bold()));
     }
 }
