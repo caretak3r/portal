@@ -1,0 +1,23 @@
+flowchart TD
+    A[portal load NAME] --> B{pre-flight checks}
+    B -->|fail| X[abort, no changes]
+    B -->|ok| C[acquire ~/.config/portal/portal.lock]
+    C --> D[tar.zst backup of ~/.claude/]
+    D --> E[build target tree in tempdir<br/>skeleton + profile overlay]
+    E --> F{verify built checksums<br/>match manifest}
+    F -->|mismatch| X
+    F -->|ok| G["rename ~/.claude → ~/.claude.portal-old"]
+    G --> H["rename tempdir → ~/.claude<br/>(single syscall, atomic)"]
+    H -->|fail| R[reverse: rename old → ~/.claude]
+    H -->|ok| I[remove ~/.claude.portal-old]
+    I --> J[update portal.state.json]
+    J --> K[reinstall plugins from blueprint]
+    R --> X
+    K --> Z[done]
+
+    classDef danger fill:#5d2222,stroke:#c66,color:#fff
+    classDef safe fill:#1f3d1f,stroke:#5a5,color:#fff
+    classDef io fill:#1f2d4d,stroke:#56a,color:#fff
+    class X danger
+    class Z safe
+    class C,D,E,G,H,I,J,K io
