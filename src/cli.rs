@@ -450,13 +450,13 @@ fn cmd_list(cli: &Cli, paths: &PortalPaths) -> Result<()> {
 
     // Header
     println!(
-        "  {:<20} {:>5}   {:>6}   {:>7}   {:<20} {}",
+        "  {:<2} {:<20} {:<8} {:<10} {:<8} {}",
+        "",
         style("Profile").bold().underlined(),
         style("Files").bold().underlined(),
         style("Size").bold().underlined(),
         style("Plugins").bold().underlined(),
         style("Tags").bold().underlined(),
-        style("Active").bold().underlined(),
     );
 
     for entry in &entries {
@@ -468,7 +468,7 @@ fn cmd_list(cli: &Cli, paths: &PortalPaths) -> Result<()> {
                 Ok(m) => {
                     let count = m.files.len();
                     let size: u64 = m.files.values().map(|f| f.size).sum();
-                    let tags = m.tags.join(",");
+                    let tags = m.tags.join(", ");
                     (count, size, tags)
                 }
                 Err(_) => (0, 0, String::new()),
@@ -487,18 +487,22 @@ fn cmd_list(cli: &Cli, paths: &PortalPaths) -> Result<()> {
         let is_active = active.is_some_and(|a| a == name);
         let marker = if is_active { "●" } else { "○" };
 
+        // Pad name before styling so ANSI escapes don't break alignment
+        let padded_name = format!("{name:<20}");
+        let styled_name = if is_active {
+            style(padded_name).green().bold().to_string()
+        } else {
+            padded_name
+        };
+
         println!(
-            "  {:<20} {:>5}   {:>6}   {:>7}   {:<20} {}",
-            if is_active {
-                style(&name).green().bold().to_string()
-            } else {
-                name.clone()
-            },
+            "  {:<2} {} {:<8} {:<10} {:<8} {}",
+            marker,
+            styled_name,
             file_count,
             format_size(total_size),
             plugin_count,
             truncate_str(&tags, 20),
-            marker,
         );
     }
 
