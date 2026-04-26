@@ -7,7 +7,7 @@ description = "Configuration transport layer for Claude Code"
 license = "MIT"
 
 [features]
-default = []
+default = ["tui-ratatui"]
 tui-ratatui = ["dep:ratatui", "dep:crossterm"]
 
 [dependencies]

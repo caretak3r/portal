@@ -20,11 +20,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check formatting
         run: cargo fmt --check
-      - name: Clippy (no TUI)
+      - name: Clippy (default = TUI)
         run: cargo clippy -- -D warnings
-      - name: Clippy (ratatui)
-        run: cargo clippy --features tui-ratatui -- -D warnings
-      - name: Run tests
+      - name: Clippy (lean CLI)
+        run: cargo clippy --no-default-features -- -D warnings
+      - name: Run tests (default = TUI)
         run: cargo test
+      - name: Run tests (lean CLI)
+        run: cargo test --no-default-features
       - name: Build release
         run: cargo build --release
