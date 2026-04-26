@@ -5,6 +5,7 @@ pub mod diff;
 pub mod loader;
 pub mod plugins;
 pub mod profile;
+pub mod progress;
 pub mod safety;
 pub mod skeleton;
 pub mod snapshot;

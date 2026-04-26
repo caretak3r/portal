@@ -1,3 +1,4 @@
+use crate::core::progress::ProgressReporter;
 use crate::core::{backup, checksum, plugins, safety, skeleton};
 use crate::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 use anyhow::{bail, Context, Result};
@@ -23,29 +24,34 @@ pub struct LoadResult {
 
 /// Load a saved profile into `~/.claude/` via atomic swap.
 ///
-/// # Steps
+/// Convenience wrapper around [`load_with_progress`] with a no-op reporter.
 ///
-/// 1. Pre-flight checks (skips Claude-running check when `skip_claude_check` is true)
-/// 2. Acquire file lock
-/// 3. Read and verify profile manifest checksums
-/// 4. Back up current `~/.claude/`
-/// 5. Build target directory in a tempdir (skeleton + profile files overlay)
-/// 6. Verify built checksums
-/// 7. Atomic swap: current → `.portal-old`, built → `.claude`, remove `.portal-old`
-/// 8. Reinstall plugins (non-fatal, controlled by `no_plugins`)
-/// 9. Update `portal.state.json`
-/// 10. Increment manifest load count
+/// # Errors
+///
+/// Returns an error on pre-flight, checksum, or filesystem failures.
+pub fn load(
+    paths: &PortalPaths,
+    profile_name: &str,
+    no_plugins: bool,
+    skip_claude_check: bool,
+) -> Result<LoadResult> {
+    load_with_progress(paths, profile_name, no_plugins, skip_claude_check, &super::progress::NoProgress)
+}
+
+/// Load a saved profile into `~/.claude/` via atomic swap with progress reporting.
 ///
 /// # Errors
 ///
 /// Returns an error if pre-flight checks fail, the profile manifest is
 /// corrupt, checksum verification fails, filesystem operations (rename,
 /// copy) fail, or state persistence fails.
-pub fn load(
+#[allow(clippy::too_many_lines)]
+pub fn load_with_progress(
     paths: &PortalPaths,
     profile_name: &str,
     no_plugins: bool,
     skip_claude_check: bool,
+    progress: &dyn ProgressReporter,
 ) -> Result<LoadResult> {
     // 1. Pre-flight checks.
     if skip_claude_check {
@@ -101,8 +107,10 @@ pub fn load(
     // Lay down skeleton first.
     skeleton::create(&build_dir)?;
 
-    // Overlay profile files.
-    copy_dir_recursive(&files_dir, &build_dir)?;
+    // Overlay profile files with progress.
+    let file_count = manifest.files.len() as u64;
+    progress.set_total(file_count);
+    copy_dir_with_progress(&files_dir, &build_dir, progress)?;
 
     let files_loaded = manifest.files.len();
 
@@ -180,6 +188,44 @@ pub fn load(
         backup_path,
         plugin_results,
     })
+}
+
+/// Recursively copy files from `src` to `dst` with progress reporting.
+///
+/// # Errors
+///
+/// Returns an error if directory traversal, creation, or copy fails.
+fn copy_dir_with_progress(src: &Path, dst: &Path, progress: &dyn ProgressReporter) -> Result<()> {
+    let mut count: u64 = 0;
+    for entry in WalkDir::new(src).min_depth(1) {
+        let entry =
+            entry.with_context(|| format!("walking directory: {}", src.display()))?;
+        let rel = entry
+            .path()
+            .strip_prefix(src)
+            .with_context(|| "stripping prefix during copy")?;
+        let target = dst.join(rel);
+
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(&target)
+                .with_context(|| format!("creating dir: {}", target.display()))?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating parent: {}", parent.display()))?;
+            }
+            std::fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "copying {} -> {}",
+                    entry.path().display(),
+                    target.display()
+                )
+            })?;
+            count += 1;
+            progress.tick(count, &rel.to_string_lossy());
+        }
+    }
+    Ok(())
 }
 
 /// Recursively copy all files from `src` to `dst`, creating parent

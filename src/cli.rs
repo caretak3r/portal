@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use console::style;
 
+use portal::core::progress::ProgressReporter;
 use portal::core::{backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport};
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
@@ -340,10 +341,9 @@ fn cmd_save(
         return Ok(());
     }
 
-    let spinner = progress_spinner("Saving profile...");
-    let result = snapshot::save(paths, &name, description, tags)?;
-    finish_spinner(
-        &spinner,
+    let progress = CliProgress::new("Saving");
+    let result = snapshot::save_with_progress(paths, &name, description, tags, &progress)?;
+    progress.finish(
         &format!(
             "Saved profile \"{}\" ({} files)",
             style(&name).green().bold(),
@@ -380,10 +380,9 @@ fn cmd_load(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
         return Ok(());
     }
 
-    let spinner = progress_spinner("Loading profile...");
-    let result = loader::load(paths, name, cli.no_plugins, cli.force)?;
-    finish_spinner(
-        &spinner,
+    let progress = CliProgress::new("Loading");
+    let result = loader::load_with_progress(paths, name, cli.no_plugins, cli.force, &progress)?;
+    progress.finish(
         &format!(
             "Loaded profile \"{}\" ({} files)",
             style(&result.profile).green().bold(),
@@ -1141,10 +1140,9 @@ fn cmd_clone(
         fresh_claude_md,
     };
 
-    let spinner = progress_spinner("Cloning profile...");
-    let result = clone::clone_profile(paths, &opts)?;
-    finish_spinner(
-        &spinner,
+    let progress = CliProgress::new("Cloning");
+    let result = clone::clone_profile_with_progress(paths, &opts, &progress)?;
+    progress.finish(
         &format!(
             "Cloned \"{}\" -> \"{}\"",
             style(&result.source).cyan(),
@@ -1363,4 +1361,41 @@ fn progress_spinner(msg: &str) -> indicatif::ProgressBar {
 
 fn finish_spinner(pb: &indicatif::ProgressBar, msg: &str) {
     pb.finish_with_message(format!("{} {msg}", style("✓").green().bold()));
+}
+
+/// Progress bar that shows `[current/total] filename` during file operations.
+struct CliProgress {
+    pb: indicatif::ProgressBar,
+}
+
+impl CliProgress {
+    #[allow(clippy::expect_used, clippy::literal_string_with_formatting_args)]
+    fn new(prefix: &str) -> Self {
+        let pb = indicatif::ProgressBar::new(0);
+        pb.set_style(
+            indicatif::ProgressStyle::with_template(
+                "{spinner:.cyan} {prefix} [{pos}/{len}] {msg}"
+            )
+            .expect("valid template")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.set_prefix(prefix.to_string());
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        Self { pb }
+    }
+}
+
+impl portal::core::progress::ProgressReporter for CliProgress {
+    fn set_total(&self, total: u64) {
+        self.pb.set_length(total);
+    }
+
+    fn tick(&self, current: u64, item: &str) {
+        self.pb.set_position(current);
+        self.pb.set_message(item.to_string());
+    }
+
+    fn finish(&self, message: &str) {
+        self.pb.finish_with_message(format!("{} {message}", style("✓").green().bold()));
+    }
 }

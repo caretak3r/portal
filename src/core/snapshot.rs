@@ -1,6 +1,7 @@
 use crate::core::checksum;
 use crate::core::plugins;
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
+use crate::core::progress::ProgressReporter;
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest};
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -112,8 +113,7 @@ fn classify_source(rel_path: &str, content: &[u8]) -> FileSource {
 
 /// Snapshot the current `~/.claude/` into a named profile.
 ///
-/// Scans trackable files, copies them into the profile directory,
-/// computes checksums, writes the manifest, plugin blueprint, and metadata.
+/// Convenience wrapper around [`save_with_progress`] that uses a no-op reporter.
 ///
 /// # Errors
 ///
@@ -124,6 +124,22 @@ pub fn save(
     name: &str,
     description: &str,
     tags: &[String],
+) -> Result<ProfileManifest> {
+    save_with_progress(paths, name, description, tags, &super::progress::NoProgress)
+}
+
+/// Snapshot the current `~/.claude/` into a named profile with progress reporting.
+///
+/// # Errors
+///
+/// Returns an error if the `.claude/` directory doesn't exist, or if
+/// any file copy, checksum, or manifest write fails.
+pub fn save_with_progress(
+    paths: &PortalPaths,
+    name: &str,
+    description: &str,
+    tags: &[String],
+    progress: &dyn ProgressReporter,
 ) -> Result<ProfileManifest> {
     let claude_dir = paths.claude_root();
     if !claude_dir.is_dir() {
@@ -141,12 +157,17 @@ pub fn save(
     // Scan trackable files.
     let trackable = scan_trackable_files(&claude_dir)?;
 
+    progress.set_total(trackable.len() as u64);
+
     // Copy files, compute checksums.
     let mut entries: HashMap<String, FileEntry> = HashMap::new();
 
-    for rel in &trackable {
+    for (i, rel) in trackable.iter().enumerate() {
         let src = claude_dir.join(rel);
         let dst = files_dir.join(rel);
+
+        let rel_str = rel.to_string_lossy().to_string();
+        progress.tick(i as u64 + 1, &rel_str);
 
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)
@@ -163,7 +184,6 @@ pub fn save(
         let content = std::fs::read(&dst)
             .with_context(|| format!("reading file for classification: {}", dst.display()))?;
 
-        let rel_str = rel.to_string_lossy().to_string();
         let source = classify_source(&rel_str, &content);
 
         entries.insert(

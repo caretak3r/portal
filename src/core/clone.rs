@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::core::checksum;
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
+use crate::core::progress::ProgressReporter;
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest};
 
 /// Categories of files that can be selectively included in a clone.
@@ -124,12 +125,28 @@ pub struct CloneResult {
 
 /// Clone a profile, selectively copying file categories.
 ///
+/// Convenience wrapper around [`clone_profile_with_progress`] with a no-op reporter.
+///
+/// # Errors
+///
+/// Returns an error if the source profile doesn't exist, the target
+/// already exists, or file operations fail.
+pub fn clone_profile(paths: &PortalPaths, opts: &CloneOptions<'_>) -> Result<CloneResult> {
+    clone_profile_with_progress(paths, opts, &super::progress::NoProgress)
+}
+
+/// Clone a profile with progress reporting.
+///
 /// # Errors
 ///
 /// Returns an error if the source profile doesn't exist, the target
 /// already exists, or file operations fail.
 #[allow(clippy::too_many_lines)]
-pub fn clone_profile(paths: &PortalPaths, opts: &CloneOptions<'_>) -> Result<CloneResult> {
+pub fn clone_profile_with_progress(
+    paths: &PortalPaths,
+    opts: &CloneOptions<'_>,
+    progress: &dyn ProgressReporter,
+) -> Result<CloneResult> {
     let source_dir = paths.profile_dir(opts.source);
     if !source_dir.exists() {
         bail!("Source profile \"{}\" not found.", opts.source);
@@ -165,8 +182,13 @@ pub fn clone_profile(paths: &PortalPaths, opts: &CloneOptions<'_>) -> Result<Clo
 
     let mut cloned_entries: HashMap<String, FileEntry> = HashMap::new();
     let mut skipped = 0usize;
+    let mut processed: u64 = 0;
+
+    progress.set_total(source_manifest.files.len() as u64);
 
     for (rel_path, entry) in &source_manifest.files {
+        processed += 1;
+        progress.tick(processed, rel_path);
         let cat = categorize_file(rel_path);
 
         // Handle fresh-claude-md: skip source CLAUDE.md, we'll create an empty one.
