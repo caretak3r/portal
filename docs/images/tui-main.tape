@@ -17,18 +17,27 @@ Type "portal"
 Enter
 Sleep 1500ms
 
-Down
-Sleep 500ms
-Down
-Sleep 800ms
-Up
-Sleep 600ms
-Enter
-Sleep 1500ms
+# Pan the file tree on the active profile.
 Down
 Sleep 400ms
 Down
-Sleep 1500ms
+Sleep 400ms
+Down
+Sleep 800ms
+
+# Tab to a different profile and load it. The async-progress modal
+# (Phase 3) flashes briefly before we land back in Detail.
+Tab
+Sleep 600ms
+Type "l"
+Sleep 800ms
+Enter
+Sleep 2200ms
+
+# Phase 1 hint — status bar now reads "⌫ <previous>". Backspace
+# toggles straight back without re-selecting from the list.
+Backspace
+Sleep 1800ms
 
 Hide
 Type "q"

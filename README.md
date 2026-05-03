@@ -5,6 +5,7 @@ Profile manager for Claude Code. Save, switch, and diff `~/.claude/` configurati
 ```bash
 portal save work-redteam       # snapshot current .claude/ as a profile
 portal load personal-webdev    # atomic swap to a different config
+portal toggle                  # bounce back to the previously active profile
 portal diff work-redteam personal-webdev   # compare two profiles
 portal clone work-redteam fresh --only skills,rules --fresh-claude-md
 portal export work-redteam     # portable archive for sharing
@@ -90,13 +91,24 @@ portal save trial --dry-run   # show what would be saved
 
 ### `portal load <NAME>`
 
-Replace `~/.claude/` with the named profile via atomic swap. A `tar.zst` backup is taken first. After the swap, plugins are reinstalled from the blueprint.
+Replace `~/.claude/` with the named profile via atomic swap. A `tar.zst` backup is taken first. After the swap, plugins are reinstalled from the blueprint — only the *delta* against the previously active profile, so toggling between similar configs is a near-no-op.
 
 ```bash
 portal load personal-webdev
 portal load untested --no-backup --force   # skip backup (requires --force)
 portal load minimal --no-plugins           # skip plugin reinstall
 ```
+
+### `portal toggle`
+
+Swap to the previously active profile. Portal records the outgoing profile on every successful load, so this is a one-shot way to bounce between two configs without typing names.
+
+```bash
+portal toggle                  # → load whatever was active before
+portal toggle --no-plugins     # honors the same flags as `load`
+```
+
+If no previous profile is recorded yet (you've only loaded one in this session), the command exits with a helpful error.
 
 ### `portal list`
 
@@ -214,18 +226,39 @@ Press `d` on a non-active profile to enter diff view. Modified files are yellow 
 
 ![TUI: structural diff between two profiles](docs/images/tui-diff.gif)
 
-**Keybindings**
+### Fast switching
+
+`/` opens a fuzzy quick-switch overlay. Type any substring of a profile name; the list re-ranks live by skim score, `Enter` loads the highlighted match. With an empty query the list is ordered by most-recently-loaded.
+
+![TUI: type / to fuzzy-search profiles, Enter to load](docs/images/tui-quick-switch.gif)
+
+`Backspace` is an instant toggle to whichever profile was active before the current one — the status bar shows the toggle target as `⌫ <name>`.
+
+![TUI: Backspace toggles between the two most recent profiles](docs/images/tui-toggle.gif)
+
+### Per-load options
+
+The Load Confirm modal exposes the same flags as the CLI. Toggle `b` (backup), `p` (plugins), or `d` (dry-run) inline before confirming. `Shift-L` from Detail opens the modal with dry-run preset.
+
+![TUI: toggling backup/plugins/dry-run flags before a load](docs/images/tui-load-flags.gif)
+
+### Keybindings
 
 | Key | Action |
 |-----|--------|
 | `j/k` | Navigate file tree (detail) or modified files (diff) |
 | `Enter` | Expand/collapse folder, or view content diff in diff mode |
 | `Tab/S-Tab` | Next/previous profile |
-| `l` | Load selected profile |
+| `/` | Quick-switch (fuzzy filter) |
+| `l` | Load selected profile (default flags) |
+| `L` | Dry-run preview of a load |
+| `⌫` | Toggle to previous profile |
+| `b/p/d` | Inside LoadConfirm: toggle backup / plugins / dry-run |
 | `d` | Toggle diff view (selected vs active) |
 | `s` | Save current `~/.claude/` as a new profile |
 | `n` | New profile (empty or clone from selected) |
 | `c` | Clone selected profile (with category picker) |
+| `T` | Theme picker |
 | `?` | Help overlay |
 | `q` | Quit |
 | `Esc` | Back / cancel |
@@ -372,14 +405,26 @@ reinstall_timeout_secs = 30
 
 ## Reproducing the Demos
 
-The GIFs under `docs/images/` are recorded with [VHS](https://github.com/charmbracelet/vhs) against a throwaway home at `/tmp/portal-demo-home/`. The `.tape` files are checked in, so you can re-run them after any change:
+The GIFs under `docs/images/` are recorded with [VHS](https://github.com/charmbracelet/vhs) against a throwaway home at `/tmp/portal-demo-home/`. Both the `.tape` scripts and the seed script that builds the demo home are checked in, so re-running is one-shot:
 
 ```bash
 brew install vhs ttyd
 cargo build --release
-vhs docs/images/cli-overview.tape
-vhs docs/images/tui-main.tape
+
+# Build the throwaway $HOME with sample profiles (idempotent — wipes + rebuilds).
+./docs/images/seed-demo-home.sh
+
+# Re-seed before each tape so profile state is deterministic across recordings.
+./docs/images/seed-demo-home.sh && vhs docs/images/cli-overview.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/tui-main.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/tui-toggle.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/tui-quick-switch.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/tui-load-flags.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/tui-diff.tape
+./docs/images/seed-demo-home.sh && vhs docs/images/cli-diff.tape
 ```
+
+Add a profile to `seed-demo-home.sh` before referencing it from a new `.tape` — keeping the seed and the tapes in sync is the only maintenance burden.
 
 ## License
 
