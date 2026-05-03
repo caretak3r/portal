@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph},
 };
 
 use crate::config::Theme;
@@ -34,6 +34,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             render_theme_picker(frame, app, frame.area());
         }
         View::Help => render_help(frame, right_pane),
+        View::LoadInProgress => {
+            // Keep the profile list visible; render the modal centered over
+            // the right pane so the user sees what they're loading next to
+            // the progress.
+            render_detail(frame, app, right_pane);
+            render_load_in_progress(frame, app, right_pane);
+        }
+        View::QuickSwitch => {
+            render_detail(frame, app, right_pane);
+            render_quick_switch(frame, app, frame.area());
+        }
     }
 
     render_status_bar(frame, app, status_area);
@@ -83,6 +94,102 @@ fn render_theme_picker(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         ratatui::layout::Rect::new(popup.x + 2, hint_y, popup.width.saturating_sub(4), 1);
     let hint = Paragraph::new(Line::styled(
         "j/k move  Enter apply  Esc cancel",
+        Style::default().fg(palette.hint),
+    ));
+    frame.render_widget(hint, hint_area);
+}
+
+fn render_quick_switch(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let palette = Palette::for_theme(app.theme);
+
+    // Centered popup tall enough to show ~12 matches plus chrome.
+    let height = 16u16.min(area.height.saturating_sub(2));
+    let width = 50u16.min(area.width.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = ratatui::layout::Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Quick switch ")
+        .style(Style::default().fg(palette.header));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Layout inside: input row, separator, scrollable matches, hint footer.
+    let [input_area, list_area, hint_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    // Input row — prompt + live query + caret.
+    let input_line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(palette.accent)),
+        Span::raw(&app.quick_query),
+        Span::styled(
+            "▌",
+            Style::default()
+                .fg(palette.active)
+                .add_modifier(Modifier::SLOW_BLINK),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), input_area);
+
+    // Match list — show indices into App.profiles, highlight cursor row.
+    if app.quick_matches.is_empty() {
+        let empty = if app.profiles.is_empty() {
+            "  no profiles saved"
+        } else {
+            "  no matches"
+        };
+        frame.render_widget(
+            Paragraph::new(empty).style(Style::default().fg(palette.muted)),
+            list_area,
+        );
+    } else {
+        let visible = list_area.height as usize;
+        // Scroll so the cursor row is always on screen.
+        let start = if app.quick_cursor >= visible {
+            app.quick_cursor + 1 - visible
+        } else {
+            0
+        };
+        let items: Vec<ListItem<'_>> = app
+            .quick_matches
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+            .map(|(rank, &profile_idx)| {
+                let p = &app.profiles[profile_idx];
+                let is_active = app.is_active(&p.name);
+                let marker = if is_active { "● " } else { "  " };
+                let style = if rank == app.quick_cursor {
+                    Style::default()
+                        .bg(palette.selection_bg)
+                        .fg(palette.selection_fg)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_active {
+                    Style::default().fg(palette.active)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(Span::styled(
+                    format!("{marker}{}", p.name),
+                    style,
+                )))
+            })
+            .collect();
+        let list = List::new(items);
+        frame.render_widget(list, list_area);
+    }
+
+    let hint = Paragraph::new(Line::styled(
+        "type to filter  ↑↓ move  Enter load  Esc cancel",
         Style::default().fg(palette.hint),
     ));
     frame.render_widget(hint, hint_area);
@@ -643,9 +750,12 @@ fn render_save_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect)
 }
 
 fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Confirm Load ");
+    let title = if app.load_options.dry_run {
+        " Confirm Load — DRY RUN "
+    } else {
+        " Confirm Load "
+    };
+    let block = Block::default().borders(Borders::ALL).title(title);
 
     let Some(profile) = app.selected_profile() else {
         let empty = Paragraph::new("No profile selected.").block(block);
@@ -715,16 +825,50 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         }
     }
 
+    // ── Per-load flag toggles (mirror the CLI flags). ──
+    let opts = &app.load_options;
     lines.push(Line::from(""));
-    lines.push(Line::from("A backup will be created automatically."));
+    lines.push(Line::from(vec![
+        Span::styled("Options:  ", label),
+        flag_chip("b", "backup", opts.backup),
+        Span::raw("  "),
+        flag_chip("p", "plugins", opts.plugins),
+        Span::raw("  "),
+        flag_chip("d", "dry-run", opts.dry_run),
+    ]));
+    if opts.dry_run {
+        lines.push(Line::from(vec![Span::styled(
+            "  dry-run on — no swap, no backup, no reinstall",
+            Style::default().fg(Color::Yellow),
+        )]));
+    } else if !opts.backup {
+        lines.push(Line::from(vec![Span::styled(
+            "  backup off — load is irreversible (use `portal undo`'s prior backup)",
+            Style::default().fg(Color::Yellow),
+        )]));
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::styled(
-        "y/Enter: confirm  Esc/n: cancel",
+        "b/p/d toggle  y/Enter confirm  Esc/n cancel",
         Style::default().fg(Color::Yellow),
     ));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+/// Render a single `[x] label` / `[ ] label` flag chip with the keybind
+/// letter highlighted. Used by the `LoadConfirm` options row.
+fn flag_chip(key: &str, label: &str, on: bool) -> Span<'static> {
+    let mark = if on { "[x] " } else { "[ ] " };
+    let body = format!("{mark}{key}:{label}");
+    let style = if on {
+        Style::default().fg(Color::Green).bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    Span::styled(body, style)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -887,6 +1031,98 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     frame.render_widget(paragraph, area);
 }
 
+/// Spinner glyph picked from elapsed time. Matches the braille-dot rotation
+/// used by the CLI's `indicatif` spinner so the visual language is shared.
+#[allow(clippy::cast_possible_truncation)]
+const fn spinner_frame(elapsed: std::time::Duration) -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let idx = ((elapsed.as_millis() / 80) as usize) % FRAMES.len();
+    FRAMES[idx]
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn render_load_in_progress(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let palette = Palette::for_theme(app.theme);
+    let Some(flight) = app.load_in_flight.as_ref() else {
+        return;
+    };
+
+    // Centered popup, generous width so phase labels and filenames fit.
+    let height = 9u16.min(area.height.saturating_sub(2));
+    let width = 60u16.min(area.width.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = ratatui::layout::Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let title = format!(" Loading \"{}\" ", flight.target);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().fg(palette.header));
+
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    // Inside the modal: phase line, gauge bar (when there's a total),
+    // current item line, elapsed-time hint.
+    let [phase_line, gauge_line, item_line, _spacer, hint_line] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    let spinner = spinner_frame(flight.started_at.elapsed());
+    let phase_text = if flight.phase.is_empty() {
+        format!("{spinner} Starting…")
+    } else {
+        format!("{spinner} {}", flight.phase)
+    };
+    frame.render_widget(
+        Paragraph::new(phase_text).style(Style::default().fg(palette.active)),
+        phase_line,
+    );
+
+    if flight.total > 0 {
+        // f64 has 52 bits of mantissa; file counts that overflow precision
+        // would already have caused real I/O time to dominate. Clamp the
+        // ratio to handle ticks that briefly outrun their reported total.
+        #[allow(clippy::cast_precision_loss)]
+        let ratio = (flight.current as f64 / flight.total as f64).clamp(0.0, 1.0);
+        let gauge_label = format!("{}/{}", flight.current, flight.total);
+        let gauge = Gauge::default()
+            .ratio(ratio)
+            .label(gauge_label)
+            .gauge_style(Style::default().fg(palette.active).bg(Color::DarkGray));
+        frame.render_widget(gauge, gauge_line);
+    } else {
+        // No tickable phase — leave the gauge row blank rather than show
+        // a misleading 0/0 bar.
+        frame.render_widget(Paragraph::new("").style(Style::default()), gauge_line);
+    }
+
+    let item_text = if flight.item.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", flight.item)
+    };
+    frame.render_widget(
+        Paragraph::new(item_text).style(Style::default().fg(palette.muted)),
+        item_line,
+    );
+
+    let elapsed_secs = flight.started_at.elapsed().as_secs_f64();
+    let hint = format!("  {elapsed_secs:.1}s elapsed — please wait");
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::default().fg(palette.muted)),
+        hint_line,
+    );
+}
+
 fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
     let block = Block::default().borders(Borders::ALL).title(" Help ");
 
@@ -916,6 +1152,18 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         Line::from(vec![
             Span::styled("  l       ", hint),
             Span::raw("load selected profile"),
+        ]),
+        Line::from(vec![
+            Span::styled("  L       ", hint),
+            Span::raw("dry-run preview of a load"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /       ", hint),
+            Span::raw("quick-switch (fuzzy filter)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ⌫       ", hint),
+            Span::raw("toggle to previous profile"),
         ]),
         Line::from(""),
         Line::styled(" Diff Mode (d to enter)", Style::default().bold()),
@@ -973,8 +1221,13 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
 
     let status_text = app.status_message.as_ref().map_or_else(
         || {
+            let toggle_hint = app
+                .previous_profile
+                .as_deref()
+                .map(|p| format!("  |  ⌫ {p}"))
+                .unwrap_or_default();
             format!(
-                " Active: {active}  |  {} profiles  |  ?: help  q: quit",
+                " Active: {active}{toggle_hint}  |  {} profiles  |  ?: help  q: quit",
                 app.profiles.len()
             )
         },

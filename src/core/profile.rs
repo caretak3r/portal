@@ -47,6 +47,10 @@ pub struct PortalState {
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
+    /// Previously active profile, captured at every load so `portal toggle`
+    /// can swap straight back without the user typing a name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_operation: Option<LastOperation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +116,7 @@ impl Default for PortalState {
         Self {
             version: 1,
             active_profile: None,
+            previous_profile: None,
             last_operation: None,
             skeleton_checksum: None,
         }

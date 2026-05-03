@@ -1,6 +1,7 @@
 mod app;
 mod event;
 mod palette;
+pub mod quick_switch;
 mod ui;
 
 use crate::storage::paths::PortalPaths;

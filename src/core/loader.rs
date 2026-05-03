@@ -25,7 +25,8 @@ pub struct LoadResult {
 
 /// Load a saved profile into `~/.claude/` via atomic swap.
 ///
-/// Convenience wrapper around [`load_with_progress`] with a no-op reporter.
+/// Convenience wrapper around [`load_with_progress`] with a no-op reporter
+/// and the safe defaults (backup on, plugins reinstalled).
 ///
 /// # Errors
 ///
@@ -40,6 +41,7 @@ pub fn load(
         paths,
         profile_name,
         no_plugins,
+        false, // no_backup — keep the safe default for callers using `load`
         skip_claude_check,
         &super::progress::NoProgress,
     )
@@ -52,15 +54,17 @@ pub fn load(
 /// Returns an error if pre-flight checks fail, the profile manifest is
 /// corrupt, checksum verification fails, filesystem operations (rename,
 /// copy) fail, or state persistence fails.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
 pub fn load_with_progress(
     paths: &PortalPaths,
     profile_name: &str,
     no_plugins: bool,
+    no_backup: bool,
     skip_claude_check: bool,
     progress: &dyn ProgressReporter,
 ) -> Result<LoadResult> {
     // 1. Pre-flight checks.
+    progress.phase("Verifying profile");
     if skip_claude_check {
         // Minimal validation — just verify the profile exists.
         let profile_dir = paths.profile_dir(profile_name);
@@ -105,9 +109,26 @@ pub fn load_with_progress(
         }
     }
 
-    // 4. Back up current .claude/.
+    // 3.5. Snapshot the *current* live plugin blueprint (before the swap
+    //      mutates ~/.claude/). This lets step 8 reinstall only the delta
+    //      between active and target — for the toggle-back case where the
+    //      two profiles share most plugins, the entire reinstall becomes
+    //      a no-op. Best-effort: if extraction fails we fall through to
+    //      a full reinstall, matching pre-diff behaviour.
     let claude_dir = paths.claude_root();
-    let backup_path = if claude_dir.exists() {
+    let active_blueprint = if claude_dir.exists() && !no_plugins {
+        plugins::extract_blueprint(&claude_dir).ok()
+    } else {
+        None
+    };
+
+    // 4. Back up current .claude/.
+    progress.phase("Backing up current config");
+    let backup_path = if no_backup {
+        // Caller explicitly opted out of backups — record a sentinel path so
+        // the LoadResult and state file still serialize cleanly.
+        paths.backups_dir().join("no-backup-skipped")
+    } else if claude_dir.exists() {
         backup::create(paths, "load", profile_name)?
     } else {
         // Nothing to back up — create a placeholder path.
@@ -115,6 +136,7 @@ pub fn load_with_progress(
     };
 
     // 5. Build target in tempdir.
+    progress.phase("Building target");
     let tmp =
         tempfile::tempdir_in(paths.portal_root()).context("creating temp dir for profile build")?;
     let build_dir = tmp.path().join("claude");
@@ -162,6 +184,7 @@ pub fn load_with_progress(
     }
 
     // 7. Atomic swap.
+    progress.phase("Atomic swap");
     let old_dir = paths.claude_old();
     if old_dir.exists() {
         std::fs::remove_dir_all(&old_dir).context("removing stale .portal-old")?;
@@ -184,14 +207,15 @@ pub fn load_with_progress(
 
     info!("atomic swap complete for profile: {profile_name}");
 
-    // 8. Reinstall plugins.
+    // 8. Reinstall plugins (delta only — see step 3.5 for active capture).
+    progress.phase("Reinstalling plugins");
     let plugin_results = if no_plugins {
         Vec::new()
     } else {
         let plugins_path = paths.profile_plugins(profile_name);
         if plugins_path.exists() {
             let blueprint = plugins_manifest::read(&plugins_path).unwrap_or_default();
-            plugins::reinstall(&blueprint)
+            plugins::reinstall_with_diff(&blueprint, active_blueprint.as_ref())
         } else {
             Vec::new()
         }
@@ -200,6 +224,13 @@ pub fn load_with_progress(
     // 9. Update portal.state.json.
     let state_path = paths.state_file();
     let mut portal_state = state::read(&state_path)?;
+    // Capture the outgoing active profile as `previous_profile` so `portal
+    // toggle` can swap straight back. Loading the active profile onto itself
+    // is a no-op for toggle history — preserve whatever previous was already
+    // recorded rather than clobbering it with the same name.
+    if portal_state.active_profile.as_deref() != Some(profile_name) {
+        portal_state.previous_profile = portal_state.active_profile.clone();
+    }
     portal_state.active_profile = Some(profile_name.to_string());
     portal_state.last_operation = Some(LastOperation {
         op_type: OperationType::Load,

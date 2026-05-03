@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, HashSet};
+use std::sync::mpsc::Receiver;
+use std::thread::JoinHandle;
+use std::time::Instant;
 
 use ratatui::widgets::ListState;
 
 use crate::config::{self, Theme};
 use crate::core::clone::Category;
 use crate::core::profile::{PluginBlueprint, ProfileManifest, ProfileMeta};
+use crate::core::progress::LoadEvent;
 use crate::storage::{manifest, meta, paths::PortalPaths, plugins_manifest, state};
 
 /// Which pane / overlay the TUI is currently showing.
@@ -21,6 +25,11 @@ pub enum View {
     /// Theme picker overlay (`T`).
     ThemePicker,
     Help,
+    /// Modal shown while a load is running on a worker thread. The
+    /// associated state lives in `App.load_in_flight`.
+    LoadInProgress,
+    /// Fuzzy-search overlay for fast profile selection (`/` from Detail).
+    QuickSwitch,
 }
 
 /// Whether the new-profile dialog creates an empty profile or clones from selected.
@@ -228,6 +237,10 @@ pub struct App {
     pub paths: PortalPaths,
     pub profiles: Vec<ProfileInfo>,
     pub active_profile: Option<String>,
+    /// Last profile that was active before the current one — populated from
+    /// `portal.state.json` on every refresh. Drives the `Backspace` instant
+    /// toggle and the hint shown in the status bar.
+    pub previous_profile: Option<String>,
     pub list_state: ListState,
     pub view: View,
     pub should_quit: bool,
@@ -273,6 +286,66 @@ pub struct App {
     pub theme: Theme,
     /// Cursor position inside the theme picker overlay.
     pub theme_cursor: usize,
+
+    /// State for an in-flight async load. `None` means no load is running.
+    pub load_in_flight: Option<LoadInFlight>,
+
+    /// Toggleable per-load options surfaced in the `LoadConfirm` modal.
+    /// Reset to `LoadOptions::default()` every time the modal opens.
+    pub load_options: LoadOptions,
+
+    // ── QuickSwitch overlay (`/`) ──
+    /// Live fuzzy-search query.
+    pub quick_query: String,
+    /// Profile indices into `App.profiles`, ranked by score (or recency
+    /// when the query is empty). Recomputed on every keystroke.
+    pub quick_matches: Vec<usize>,
+    /// Cursor position within `quick_matches` — drives the highlighted row
+    /// and the target of an `Enter` keypress.
+    pub quick_cursor: usize,
+}
+
+/// Per-load options toggled inside the `LoadConfirm` dialog. Mirrors the CLI
+/// flags (`--no-backup`, `--no-plugins`, `--dry-run`) so power users get the
+/// same controls without having to drop to a terminal.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadOptions {
+    pub backup: bool,
+    pub plugins: bool,
+    pub dry_run: bool,
+}
+
+impl Default for LoadOptions {
+    fn default() -> Self {
+        Self {
+            backup: true,
+            plugins: true,
+            dry_run: false,
+        }
+    }
+}
+
+/// State carried by a running async load. Owned by the main thread; the
+/// worker thread holds the matching `Sender` end of `rx` and posts events
+/// as the loader makes progress, then a final `LoadEvent::Done`.
+pub struct LoadInFlight {
+    /// Profile name being loaded — shown in the modal title.
+    pub target: String,
+    /// When the load started — used to drive the spinner animation frame.
+    pub started_at: Instant,
+    /// Most recent phase label. "" until the worker emits the first phase.
+    pub phase: String,
+    /// File-level progress within the current phase; both 0 between phases.
+    pub current: u64,
+    pub total: u64,
+    /// Last per-file label ticked. "" until a tick arrives.
+    pub item: String,
+    /// Receiver end of the progress channel. Drained each event-loop tick.
+    pub rx: Receiver<LoadEvent>,
+    /// Worker join handle. Kept alive so the thread isn't detached; we
+    /// don't actively `join()` because the `Done` event already carries
+    /// the result.
+    pub _handle: JoinHandle<()>,
 }
 
 impl App {
@@ -289,6 +362,7 @@ impl App {
             paths,
             profiles: Vec::new(),
             active_profile: None,
+            previous_profile: None,
             list_state: ListState::default(),
             view: View::default(),
             should_quit: false,
@@ -314,6 +388,11 @@ impl App {
             tree_profile: None,
             theme,
             theme_cursor,
+            load_in_flight: None,
+            load_options: LoadOptions::default(),
+            quick_query: String::new(),
+            quick_matches: Vec::new(),
+            quick_cursor: 0,
         };
         app.refresh()?;
         if !app.profiles.is_empty() {
@@ -338,6 +417,7 @@ impl App {
     pub fn refresh(&mut self) -> anyhow::Result<()> {
         let portal_state = state::read(&self.paths.state_file())?;
         self.active_profile = portal_state.active_profile;
+        self.previous_profile = portal_state.previous_profile;
 
         let profiles_root = self.paths.profiles_root();
         let mut profiles = Vec::new();
@@ -369,6 +449,125 @@ impl App {
 
         self.profiles = profiles;
         Ok(())
+    }
+
+    /// Non-blockingly drain pending events from an in-flight async load.
+    ///
+    /// Returns `true` if the load just finished (i.e. a `Done` event was
+    /// observed); the caller is then responsible for the post-load UI
+    /// transition (refresh, status message, view back to Detail). When no
+    /// load is in flight, this is a no-op.
+    pub fn drain_load_events(&mut self) -> bool {
+        let Some(flight) = self.load_in_flight.as_mut() else {
+            return false;
+        };
+
+        let mut finished = false;
+        let mut summary: Option<Result<crate::core::loader::LoadResult, String>> = None;
+
+        loop {
+            match flight.rx.try_recv() {
+                Ok(LoadEvent::Phase(label)) => {
+                    flight.phase = label;
+                    // Reset the per-phase counters so a phase that doesn't
+                    // emit ticks (backup, swap) doesn't keep stale numbers
+                    // on screen from the previous phase.
+                    flight.current = 0;
+                    flight.total = 0;
+                    flight.item.clear();
+                }
+                Ok(LoadEvent::Progress {
+                    current,
+                    total,
+                    item,
+                }) => {
+                    flight.current = current;
+                    flight.total = total;
+                    flight.item = item;
+                }
+                Ok(LoadEvent::Done(result)) => {
+                    summary = Some(result);
+                    finished = true;
+                    // Keep draining: there may be late progress events
+                    // queued before the worker thread sent Done.
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Worker dropped its sender without a Done event — treat
+                    // as a silent failure rather than spinning forever.
+                    if !finished {
+                        summary = Some(Err("loader thread terminated unexpectedly".into()));
+                        finished = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if finished {
+            // Drop the in-flight handle and apply the result to status.
+            self.load_in_flight = None;
+            self.view = View::Detail;
+            match summary {
+                Some(Ok(r)) => {
+                    self.status_message = Some(format!(
+                        "Loaded \"{}\" ({} files).",
+                        r.profile, r.files_loaded
+                    ));
+                }
+                Some(Err(e)) => {
+                    self.status_message = Some(format!("Load failed: {e}"));
+                }
+                None => {}
+            }
+            let _ = self.refresh();
+            self.rebuild_tree();
+        }
+
+        finished
+    }
+
+    /// Open the quick-switch overlay with an empty query (recency-ordered list).
+    pub fn quick_switch_open(&mut self) {
+        self.quick_query.clear();
+        self.quick_cursor = 0;
+        self.recompute_quick_matches();
+        self.view = View::QuickSwitch;
+    }
+
+    /// Re-rank `quick_matches` against the current `quick_query`. Cheap enough
+    /// to call on every keystroke — fuzzy-matcher is microseconds per profile.
+    pub fn recompute_quick_matches(&mut self) {
+        let inputs: Vec<super::quick_switch::RankInput<'_>> = self
+            .profiles
+            .iter()
+            .map(|p| super::quick_switch::RankInput {
+                name: p.name.as_str(),
+                last_loaded: p.manifest.last_loaded,
+            })
+            .collect();
+        self.quick_matches = super::quick_switch::rank_profiles(&self.quick_query, &inputs);
+        if self.quick_cursor >= self.quick_matches.len() {
+            self.quick_cursor = self.quick_matches.len().saturating_sub(1);
+        }
+    }
+
+    /// Profile currently highlighted in the quick switcher, if any.
+    pub fn quick_switch_selected(&self) -> Option<&ProfileInfo> {
+        self.quick_matches
+            .get(self.quick_cursor)
+            .and_then(|&i| self.profiles.get(i))
+    }
+
+    /// Move the quick-switch cursor with wrap-around.
+    pub fn quick_switch_move(&mut self, delta: isize) {
+        let len = self.quick_matches.len();
+        if len == 0 {
+            return;
+        }
+        let cur = isize::try_from(self.quick_cursor).unwrap_or(0);
+        let next = ((cur + delta).rem_euclid(isize::try_from(len).unwrap_or(1))).max(0);
+        self.quick_cursor = usize::try_from(next).unwrap_or(0);
     }
 
     /// Currently selected profile, if any.

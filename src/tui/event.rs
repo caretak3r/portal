@@ -1,8 +1,10 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::io;
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
-use super::app::{App, NewProfileMode, View};
+use super::app::{App, LoadInFlight, LoadOptions, NewProfileMode, View};
+use crate::core::progress::{ChannelProgress, LoadEvent};
 
 /// Poll for input and dispatch to the appropriate handler.
 ///
@@ -12,7 +14,15 @@ use super::app::{App, NewProfileMode, View};
 ///
 /// Returns an error on terminal I/O failure.
 pub fn handle(app: &mut App) -> io::Result<bool> {
+    // Drain any queued progress events from an in-flight load before we
+    // block on input. Keeps the spinner / phase indicator current and
+    // performs the post-load transition the moment Done arrives.
+    app.drain_load_events();
+
     if !event::poll(Duration::from_millis(100))? {
+        // Drain again after the poll: the loader thread may have made
+        // progress while we slept on input. Cheap when nothing's queued.
+        app.drain_load_events();
         return Ok(app.should_quit);
     }
 
@@ -38,6 +48,11 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
         View::CloneDialog => handle_clone_dialog(app, key.code),
         View::ThemePicker => handle_theme_picker(app, key.code),
         View::Help => handle_help(app, key.code),
+        View::QuickSwitch => handle_quick_switch(app, key.code),
+        // While a load runs we ignore all keys except the Ctrl+C above —
+        // there's no in-flight cancellation in the loader, and accidental
+        // input could swap views and lose the progress modal.
+        View::LoadInProgress => {}
     }
 
     Ok(app.should_quit)
@@ -83,6 +98,7 @@ fn handle_theme_picker(app: &mut App, code: KeyCode) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // dispatch table for the main view's keybinds
 fn handle_main(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('q') => app.should_quit = true,
@@ -139,7 +155,28 @@ fn handle_main(app: &mut App, code: KeyCode) {
         }
 
         KeyCode::Char('l') if app.view == View::Detail && app.selected_profile().is_some() => {
+            app.load_options = LoadOptions::default();
             app.view = View::LoadConfirm;
+        }
+        // Shift+L = "load with dry-run" preset. Same modal, but the
+        // dry-run flag is on by default — handy for previewing the
+        // file/plugin diff before you actually swap.
+        KeyCode::Char('L') if app.view == View::Detail && app.selected_profile().is_some() => {
+            app.load_options = LoadOptions {
+                dry_run: true,
+                ..LoadOptions::default()
+            };
+            app.view = View::LoadConfirm;
+        }
+        // Backspace = instant toggle to the previously active profile. Only
+        // active in Detail view (other views use Backspace for text editing).
+        KeyCode::Backspace if app.view == View::Detail && app.previous_profile.is_some() => {
+            execute_toggle(app);
+        }
+        // `/` opens the fuzzy quick-switch overlay. Type-to-find beats
+        // Tab-cycling once the profile list grows past ~10 entries.
+        KeyCode::Char('/') if app.view == View::Detail && !app.profiles.is_empty() => {
+            app.quick_switch_open();
         }
         KeyCode::Char('d') => {
             app.file_scroll = 0;
@@ -219,8 +256,63 @@ fn handle_save_dialog(app: &mut App, code: KeyCode) {
     }
 }
 
+fn handle_quick_switch(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Esc => {
+            app.view = View::Detail;
+            app.quick_query.clear();
+            app.quick_cursor = 0;
+        }
+        // Up/Down arrows move the highlight; vim-style j/k would conflict
+        // with literal letters in the fuzzy query so they're intentionally
+        // not bound here.
+        KeyCode::Down => app.quick_switch_move(1),
+        KeyCode::Up => app.quick_switch_move(-1),
+        KeyCode::Backspace => {
+            app.quick_query.pop();
+            app.recompute_quick_matches();
+        }
+        KeyCode::Enter => {
+            if let Some(name) = app.quick_switch_selected().map(|p| p.name.clone()) {
+                // Sync the underlying list cursor too so the Detail pane
+                // shows the right profile when the load modal dismisses.
+                if let Some(idx) = app.quick_matches.get(app.quick_cursor).copied() {
+                    app.list_state.select(Some(idx));
+                    app.rebuild_tree();
+                }
+                // Quick-switch loads use safe defaults — there's no
+                // LoadConfirm modal where the user could toggle flags.
+                spawn_load(app, name, LoadOptions::default());
+            } else {
+                app.status_message = Some("No profile matches that query.".to_string());
+                app.view = View::Detail;
+            }
+            app.quick_query.clear();
+            app.quick_cursor = 0;
+        }
+        KeyCode::Char(c) => {
+            app.quick_query.push(c);
+            app.recompute_quick_matches();
+        }
+        _ => {}
+    }
+}
+
 fn handle_load_confirm(app: &mut App, code: KeyCode) {
     match code {
+        // 'y' is reserved for the legacy "yes" confirmation; 'n' was the
+        // legacy "no". Both still work. The flag toggles use the same
+        // letters as the CLI long-flags (b/p/d) so the muscle memory
+        // transfers cleanly.
+        KeyCode::Char('b') => {
+            app.load_options.backup = !app.load_options.backup;
+        }
+        KeyCode::Char('p') => {
+            app.load_options.plugins = !app.load_options.plugins;
+        }
+        KeyCode::Char('d') => {
+            app.load_options.dry_run = !app.load_options.dry_run;
+        }
         KeyCode::Char('y') | KeyCode::Enter => execute_load(app),
         KeyCode::Esc | KeyCode::Char('n') => app.view = View::Detail,
         _ => {}
@@ -539,18 +631,78 @@ fn execute_load(app: &mut App) {
     let Some(name) = app.selected_profile().map(|p| p.name.clone()) else {
         return;
     };
-
-    match crate::core::loader::load(&app.paths, &name, false, true) {
-        Ok(result) => {
-            app.status_message = Some(format!(
-                "Loaded \"{}\" ({} files).",
-                result.profile, result.files_loaded
-            ));
-            let _ = app.refresh();
-        }
-        Err(e) => {
-            app.status_message = Some(format!("Load failed: {e}"));
-        }
+    let opts = app.load_options;
+    if opts.dry_run {
+        // Don't actually swap — give the user a status-bar summary of what
+        // *would* have happened. The LoadConfirm modal already shows the
+        // file/plugin diff against the active profile.
+        app.status_message = Some(format!(
+            "[dry-run] Would load \"{name}\" (backup={}, plugins={}). No changes made.",
+            opts.backup, opts.plugins
+        ));
+        app.view = View::Detail;
+        return;
     }
-    app.view = View::Detail;
+    spawn_load(app, name, opts);
+}
+
+fn execute_toggle(app: &mut App) {
+    let Some(target) = app.previous_profile.clone() else {
+        app.status_message = Some("No previous profile to toggle to.".to_string());
+        return;
+    };
+    // Toggle uses safe defaults — there's no LoadConfirm modal in front of
+    // it where the user could opt out, so we keep the auto-backup and
+    // plugin reinstall behaviour matching the pre-flag baseline.
+    spawn_load(app, target, LoadOptions::default());
+}
+
+/// Kick off a load on a worker thread, transitioning the UI to
+/// `LoadInProgress`. The main loop polls the returned channel each tick to
+/// drive the spinner and to detect completion.
+fn spawn_load(app: &mut App, target: String, opts: LoadOptions) {
+    // Refuse to start a second load if one is already in flight — the
+    // loader takes a file lock anyway, but failing fast in the UI is
+    // cleaner than letting the worker block on lock acquisition.
+    if app.load_in_flight.is_some() {
+        app.status_message = Some("A load is already in progress.".to_string());
+        return;
+    }
+
+    let (tx, rx) = mpsc::channel::<LoadEvent>();
+    let paths = app.paths.clone();
+    let target_for_thread = target.clone();
+    let tx_done = tx.clone();
+
+    let handle = std::thread::spawn(move || {
+        let reporter = ChannelProgress::new(tx);
+        let outcome = crate::core::loader::load_with_progress(
+            &paths,
+            &target_for_thread,
+            !opts.plugins, // no_plugins
+            !opts.backup,  // no_backup
+            true,          // skip_claude_check (TUI assumes interactive context)
+            &reporter,
+        );
+        // Forward the terminal result regardless of which event branch
+        // the loader exited through.
+        let event = match outcome {
+            Ok(r) => LoadEvent::Done(Ok(r)),
+            Err(e) => LoadEvent::Done(Err(format!("{e:#}"))),
+        };
+        let _ = tx_done.send(event);
+    });
+
+    app.load_in_flight = Some(LoadInFlight {
+        target,
+        started_at: Instant::now(),
+        phase: String::new(),
+        current: 0,
+        total: 0,
+        item: String::new(),
+        rx,
+        _handle: handle,
+    });
+    app.view = View::LoadInProgress;
+    app.status_message = None;
 }

@@ -59,6 +59,8 @@ enum Commands {
         /// Profile name to load
         name: String,
     },
+    /// Swap to the previously active profile (instant toggle)
+    Toggle,
     /// List all saved profiles
     List,
     /// Show detailed info about a profile
@@ -155,6 +157,7 @@ pub fn run() -> Result<()> {
             tags,
         }) => cmd_save(&cli, &paths, name.as_deref(), description, tags),
         Some(Commands::Load { name }) => cmd_load(&cli, &paths, name),
+        Some(Commands::Toggle) => cmd_toggle(&cli, &paths),
         Some(Commands::List) => cmd_list(&cli, &paths),
         Some(Commands::Show { name }) => cmd_show(&cli, &paths, name),
         Some(Commands::Diff { a, b, file }) => {
@@ -218,6 +221,10 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
             style("save").green()
         );
         println!("  {}       Load a saved profile", style("load").green());
+        println!(
+            "  {}     Swap to the previous profile",
+            style("toggle").green()
+        );
         println!("  {}       List all profiles", style("list").green());
         println!("  {}       Show profile details", style("show").green());
         println!("  {}       Compare two profiles", style("diff").green());
@@ -381,7 +388,14 @@ fn cmd_load(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
     }
 
     let progress = CliProgress::new("Loading");
-    let result = loader::load_with_progress(paths, name, cli.no_plugins, cli.force, &progress)?;
+    let result = loader::load_with_progress(
+        paths,
+        name,
+        cli.no_plugins,
+        cli.no_backup,
+        cli.force,
+        &progress,
+    )?;
     progress.finish(&format!(
         "Loaded profile \"{}\" ({} files)",
         style(&result.profile).green().bold(),
@@ -389,19 +403,53 @@ fn cmd_load(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
     ));
 
     if !result.plugin_results.is_empty() && !cli.quiet {
-        println!();
-        println!("  {}", style("Plugins:").bold());
-        for pr in &result.plugin_results {
-            let icon = if pr.success {
-                style("  ✓").green()
-            } else {
-                style("  ✗").red()
-            };
-            println!("{icon} {}", pr.id);
-            if cli.verbose && !pr.message.is_empty() {
-                println!("    {}", pr.message.trim());
-            }
-        }
+        print_plugin_results(&result.plugin_results, cli.verbose);
+    }
+
+    if !cli.quiet {
+        println!("  Backup: {}", style(result.backup_path.display()).dim());
+    }
+
+    Ok(())
+}
+
+// ── toggle ───────────────────────────────────────────────────────────
+
+fn cmd_toggle(cli: &Cli, paths: &PortalPaths) -> Result<()> {
+    let portal_state = state::read(&paths.state_file())?;
+    let Some(target) = portal_state.previous_profile else {
+        bail!(
+            "No previous profile to toggle to. Load a profile first, then \
+             load another to establish toggle history."
+        );
+    };
+
+    if cli.dry_run {
+        println!("[dry-run] Would toggle to profile \"{target}\"");
+        return Ok(());
+    }
+
+    if cli.no_backup && !cli.force {
+        bail!("--no-backup requires --force.");
+    }
+
+    let progress = CliProgress::new("Toggling");
+    let result = loader::load_with_progress(
+        paths,
+        &target,
+        cli.no_plugins,
+        cli.no_backup,
+        cli.force,
+        &progress,
+    )?;
+    progress.finish(&format!(
+        "Toggled to \"{}\" ({} files)",
+        style(&result.profile).green().bold(),
+        result.files_loaded
+    ));
+
+    if !result.plugin_results.is_empty() && !cli.quiet {
+        print_plugin_results(&result.plugin_results, cli.verbose);
     }
 
     if !cli.quiet {
@@ -689,11 +737,19 @@ fn cmd_rm(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
 
     std::fs::remove_dir_all(&profile_dir)?;
 
-    // If this was the active profile, clear it from state.
+    // If this was the active or previous profile, clear those pointers so
+    // `portal toggle` doesn't try to load a profile we just deleted.
     let state_path = paths.state_file();
     let mut portal_state = state::read(&state_path)?;
-    if portal_state.active_profile.as_deref() == Some(name) {
+    let cleared_active = portal_state.active_profile.as_deref() == Some(name);
+    let cleared_previous = portal_state.previous_profile.as_deref() == Some(name);
+    if cleared_active {
         portal_state.active_profile = None;
+    }
+    if cleared_previous {
+        portal_state.previous_profile = None;
+    }
+    if cleared_active || cleared_previous {
         state::write(&state_path, &portal_state)?;
     }
 
@@ -956,11 +1012,18 @@ fn cmd_rename(_cli: &Cli, paths: &PortalPaths, old: &str, new: &str) -> Result<(
         manifest::write(&manifest_path, &m)?;
     }
 
-    // Update active profile in state if needed.
+    // Update active / previous profile pointers in state if either matches.
     let state_path = paths.state_file();
     let mut portal_state = state::read(&state_path)?;
-    if portal_state.active_profile.as_deref() == Some(old) {
+    let renamed_active = portal_state.active_profile.as_deref() == Some(old);
+    let renamed_previous = portal_state.previous_profile.as_deref() == Some(old);
+    if renamed_active {
         portal_state.active_profile = Some(new.to_string());
+    }
+    if renamed_previous {
+        portal_state.previous_profile = Some(new.to_string());
+    }
+    if renamed_active || renamed_previous {
         state::write(&state_path, &portal_state)?;
     }
 
@@ -1027,18 +1090,11 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>, fix_plugins: b
             if fix_plugins && !bp.plugins.is_empty() {
                 println!();
                 println!("  {}", style("Reinstalling plugins...").bold());
+                // verify --fix-plugins always does a full reinstall — it's
+                // the user's escape hatch when plugin code is missing or
+                // corrupt, so we deliberately bypass the diff fast-path.
                 let results = plugins::reinstall(&bp);
-                for r in &results {
-                    let icon = if r.success {
-                        style("  ✓").green()
-                    } else {
-                        style("  ✗").red()
-                    };
-                    println!("{icon} {}", r.id);
-                    if cli.verbose && !r.message.is_empty() {
-                        println!("    {}", r.message.trim());
-                    }
-                }
+                print_plugin_results(&results, cli.verbose);
                 let failed: Vec<_> = results.iter().filter(|r| !r.success).collect();
                 if !failed.is_empty() {
                     println!(
@@ -1311,6 +1367,55 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Pretty-print a `PluginInstallResult` slice with a tally line.
+///
+/// Distinguishes three states with three icons:
+///   - `⋯` skipped (already installed from a prior load — no work done)
+///   - `✓` freshly installed
+///   - `✗` install failed
+fn print_plugin_results(results: &[plugins::PluginInstallResult], verbose: bool) {
+    if results.is_empty() {
+        return;
+    }
+    println!();
+    println!("  {}", style("Plugins:").bold());
+    let mut installed = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    for pr in results {
+        let icon = if pr.skipped {
+            skipped += 1;
+            style("  ⋯").dim()
+        } else if pr.success {
+            installed += 1;
+            style("  ✓").green()
+        } else {
+            failed += 1;
+            style("  ✗").red()
+        };
+        println!("{icon} {}", pr.id);
+        if verbose && !pr.message.is_empty() {
+            println!("    {}", pr.message.trim());
+        }
+    }
+    // Tally line — only render when it adds information beyond the icons.
+    if results.len() > 1 {
+        let mut parts: Vec<String> = Vec::new();
+        if installed > 0 {
+            parts.push(format!("{installed} installed"));
+        }
+        if skipped > 0 {
+            parts.push(format!("{skipped} already current"));
+        }
+        if failed > 0 {
+            parts.push(format!("{failed} failed"));
+        }
+        if !parts.is_empty() {
+            println!("  {}", style(parts.join(", ")).dim());
+        }
+    }
+}
+
 fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -1369,5 +1474,16 @@ impl portal::core::progress::ProgressReporter for CliProgress {
     fn finish(&self, message: &str) {
         self.pb
             .finish_with_message(format!("{} {message}", style("✓").green().bold()));
+    }
+
+    fn phase(&self, label: &str) {
+        // Roll the prefix label as we cross phase boundaries so the spinner
+        // line reads "Backing up [..]", then "Building [..]", etc.
+        self.pb.set_prefix(label.to_string());
+        // Reset the per-phase length: each phase that emits set_total will
+        // overwrite it; phases that don't emit ticks (backup, swap) stay at 0.
+        self.pb.set_length(0);
+        self.pb.set_position(0);
+        self.pb.set_message(String::new());
     }
 }

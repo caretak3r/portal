@@ -2,15 +2,21 @@ use crate::core::profile::{
     MarketplaceEntry, MarketplaceSource, PluginBlueprint, PluginEntry, PluginSource,
 };
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 /// Result of attempting to install a single plugin.
+///
+/// `skipped == true` means the plugin was already current (same id and source
+/// as the previously active profile) and reinstall was skipped as an
+/// optimization. `success` is still `true` for skipped plugins because the
+/// desired end state (plugin code on disk) is satisfied.
 #[derive(Debug)]
 pub struct PluginInstallResult {
     pub id: String,
     pub success: bool,
+    pub skipped: bool,
     pub message: String,
 }
 
@@ -154,12 +160,80 @@ pub fn determine_source(settings: &serde_json::Value, plugin_id: &str) -> Plugin
     }
 }
 
+/// Stable fingerprint that identifies "this plugin from this source" — the
+/// pair we treat as install-equivalent. Two plugins with the same fingerprint
+/// have the same code on disk; only the `enabled` flag may differ, and that
+/// is carried in the swapped-in `settings.json` so it needs no reinstall.
+fn plugin_fingerprint(entry: &PluginEntry) -> String {
+    let source = match &entry.source {
+        PluginSource::Marketplace { marketplace, repo } => {
+            format!("marketplace:{marketplace}:{repo}")
+        }
+        PluginSource::Local { path } => format!("local:{path}"),
+        PluginSource::Github { repo } => format!("github:{repo}"),
+    };
+    format!("{}|{source}", entry.id)
+}
+
+/// Partition the target blueprint into "must install" vs "already current"
+/// against an optional active blueprint. With no active blueprint, everything
+/// must install. With an active blueprint, any plugin whose fingerprint is
+/// already present is skipped.
+fn diff_plugins<'a>(
+    target: &'a PluginBlueprint,
+    active: Option<&PluginBlueprint>,
+) -> (Vec<&'a PluginEntry>, Vec<PluginInstallResult>) {
+    let active_set: HashSet<String> = active
+        .map(|bp| bp.plugins.iter().map(plugin_fingerprint).collect())
+        .unwrap_or_default();
+
+    let mut to_install = Vec::new();
+    let mut skipped = Vec::new();
+    for entry in &target.plugins {
+        if active_set.contains(&plugin_fingerprint(entry)) {
+            skipped.push(PluginInstallResult {
+                id: entry.id.clone(),
+                success: true,
+                skipped: true,
+                message: "already installed".to_string(),
+            });
+        } else {
+            to_install.push(entry);
+        }
+    }
+    (to_install, skipped)
+}
+
 /// Attempt to reinstall every plugin in the blueprint via `claude plugin install`.
 ///
 /// All failures are non-fatal and captured in the returned results.
 #[must_use]
 pub fn reinstall(blueprint: &PluginBlueprint) -> Vec<PluginInstallResult> {
-    blueprint.plugins.iter().map(install_single).collect()
+    reinstall_with_diff(blueprint, None)
+}
+
+/// Reinstall only the plugins that differ between `target` and `active`.
+///
+/// When `active` is `None` (no prior state to compare against) this behaves
+/// identically to [`reinstall`] — every plugin is freshly installed.
+///
+/// When `active` is provided, plugins whose `(id, source)` fingerprint matches
+/// an entry in `active` are skipped: their code is already on disk from the
+/// previous load, and the `enabled` flag is carried by `settings.json` which
+/// the atomic swap has already replaced. For the toggle-back case where the
+/// two profiles share most plugins, this drops a O(N) network/git wait to ~0.
+///
+/// Results are sorted by id and combine both the "skipped" and "freshly
+/// installed" sets so callers always see the full target plugin list.
+#[must_use]
+pub fn reinstall_with_diff(
+    target: &PluginBlueprint,
+    active: Option<&PluginBlueprint>,
+) -> Vec<PluginInstallResult> {
+    let (to_install, mut results) = diff_plugins(target, active);
+    results.extend(to_install.iter().copied().map(install_single));
+    results.sort_by(|a, b| a.id.cmp(&b.id));
+    results
 }
 
 /// Install a single plugin, returning the result.
@@ -181,11 +255,13 @@ fn install_single(entry: &PluginEntry) -> PluginInstallResult {
         Ok(msg) => PluginInstallResult {
             id: entry.id.clone(),
             success: true,
+            skipped: false,
             message: msg,
         },
         Err(e) => PluginInstallResult {
             id: entry.id.clone(),
             success: false,
+            skipped: false,
             message: format!("{e:#}"),
         },
     }
