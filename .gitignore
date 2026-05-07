@@ -3,3 +3,8 @@
 *.swp
 *.swo
 .DS_Store
+.worktale/
+.factory*
+CLAUDE.md
+BUGS.md
+.claude*
