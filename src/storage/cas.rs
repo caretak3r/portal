@@ -72,17 +72,17 @@ pub fn write(paths: &PortalPaths, bytes: &[u8]) -> Result<String> {
 /// file regardless of size. Writes to the working copy never propagate back
 /// into the pool because the kernel performs `CoW` on the next write.
 ///
+/// Safe against an existing `dest` (clonefile/FICLONE refuse to overwrite, so
+/// we unlink first). Callers building into a freshly-created directory should
+/// prefer [`place_fresh`], which skips the unlink syscall.
+///
 /// # Errors
 ///
 /// Returns an error if neither reflink nor copy succeeds, or if the parent
 /// directory cannot be created.
 pub fn place(paths: &PortalPaths, hash: &str, dest: &Path) -> Result<()> {
-    let src = paths.object_path(hash);
-
-    // clonefile(2) on macOS and FICLONE on Linux refuse to overwrite an
-    // existing destination — the skeleton overlay step lays down some files
-    // before profile content covers them. Try the unlink unconditionally and
-    // ignore NotFound, saving a stat for the common cold-build case.
+    // Try the unlink unconditionally and ignore NotFound, saving a stat for
+    // the common cold-build case.
     match std::fs::remove_file(dest) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -90,7 +90,21 @@ pub fn place(paths: &PortalPaths, hash: &str, dest: &Path) -> Result<()> {
             return Err(e).with_context(|| format!("removing stale dest: {}", dest.display()));
         }
     }
+    place_fresh(paths, hash, dest)
+}
 
+/// Place an object from the CAS pool at `dest`, assuming nothing is there.
+///
+/// Skips the safety unlink that [`place`] performs. Caller must guarantee
+/// `dest` does not exist; clonefile/FICLONE return EEXIST otherwise. Used by
+/// the load path where every placement target lives in a freshly-built temp
+/// dir.
+///
+/// # Errors
+///
+/// Returns an error if reflink/copy fails (including EEXIST on `dest`).
+pub fn place_fresh(paths: &PortalPaths, hash: &str, dest: &Path) -> Result<()> {
+    let src = paths.object_path(hash);
     match reflink_copy::reflink_or_copy(&src, dest) {
         Ok(_) => Ok(()),
         Err(e) => Err(e)

@@ -16,7 +16,7 @@ pub const SKELETON_DIRS: &[&str] = &[
 ];
 
 /// All files that must exist in a valid Claude skeleton.
-const SKELETON_FILES: &[&str] = &["settings.json", "CLAUDE.md", ".claude/settings.local.json"];
+pub const SKELETON_FILES: &[&str] = &["settings.json", "CLAUDE.md", ".claude/settings.local.json"];
 
 /// A problem found during skeleton verification.
 #[derive(Debug, Clone, PartialEq, Eq)]

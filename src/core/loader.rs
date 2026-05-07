@@ -91,9 +91,17 @@ pub fn load_with_progress(
 
     // Pick CAS path if every referenced object is in the pool. Otherwise fall
     // back to legacy `files/` (and migrate on the way through).
-    let cas_ready = !files_dir.exists() || all_objects_present(paths, &manifest);
+    //
+    // `all_objects_present` and `verify_manifest_objects` use the same
+    // existence predicate, so when CAS is ready we already know every object
+    // is present — no second stat pass needed. Only re-verify when we took
+    // the `!files_dir.exists()` shortcut (no objects checked yet).
+    let legacy_files_present = files_dir.exists();
+    let cas_ready = !legacy_files_present || all_objects_present(paths, &manifest);
     if cas_ready {
-        verify_manifest_objects(paths, &manifest)?;
+        if !legacy_files_present {
+            verify_manifest_objects(paths, &manifest)?;
+        }
     } else {
         let mismatches = checksum::verify_manifest(&files_dir, &manifest.files)?;
         if !mismatches.is_empty() {
@@ -308,11 +316,24 @@ fn place_from_cas_parallel(
             .with_context(|| format!("creating parent dir: {}", parent.display()))?;
     }
 
+    // build_dir was just created and skeleton::create laid down a fixed set of
+    // files in it. Pre-remove the (up to 3) skeleton paths that the manifest
+    // is about to replace, then every cas::place_fresh call below can skip its
+    // own per-file unlink — saves O(n) syscalls on cold loads.
+    for s in skeleton::SKELETON_FILES {
+        if manifest.files.contains_key(*s) {
+            let p = build_dir.join(s);
+            // Best-effort: if the file isn't there, place_fresh will succeed;
+            // if it is, place_fresh would fail with EEXIST.
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
     let total = manifest.files.len() as u64;
     let mut n: u64 = 0;
     for (rel, entry) in &manifest.files {
         let dest = build_dir.join(rel);
-        cas::place(paths, &entry.checksum, &dest)?;
+        cas::place_fresh(paths, &entry.checksum, &dest)?;
         n += 1;
         progress.tick(n.min(total), rel);
     }
