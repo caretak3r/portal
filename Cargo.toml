@@ -2,7 +2,7 @@
 name = "portal"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "Configuration transport layer for Claude Code"
 license = "MIT"
 
