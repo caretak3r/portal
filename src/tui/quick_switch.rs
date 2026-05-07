@@ -85,7 +85,7 @@ mod tests {
         Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).single()
     }
 
-    fn input<'a>(name: &'a str, last: Option<DateTime<Utc>>) -> RankInput<'a> {
+    fn input(name: &str, last: Option<DateTime<Utc>>) -> RankInput<'_> {
         RankInput {
             name,
             last_loaded: last,

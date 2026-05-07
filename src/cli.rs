@@ -597,17 +597,17 @@ fn cmd_show(_cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
     );
 
     let plugins_path = paths.profile_plugins(name);
-    if plugins_path.exists() {
-        if let Ok(bp) = plugins_manifest::read(&plugins_path) {
-            println!("  Plugins:     {}", bp.plugins.len());
-            for p in &bp.plugins {
-                let status = if p.enabled {
-                    style("enabled").green()
-                } else {
-                    style("disabled").dim()
-                };
-                println!("    {} ({status})", p.id);
-            }
+    if plugins_path.exists()
+        && let Ok(bp) = plugins_manifest::read(&plugins_path)
+    {
+        println!("  Plugins:     {}", bp.plugins.len());
+        for p in &bp.plugins {
+            let status = if p.enabled {
+                style("enabled").green()
+            } else {
+                style("disabled").dim()
+            };
+            println!("    {} ({status})", p.id);
         }
     }
 
@@ -896,47 +896,47 @@ fn cmd_status(_cli: &Cli, paths: &PortalPaths) -> Result<()> {
         Some(name) => {
             println!("  Active profile: {}", style(name).green().bold());
             let manifest_path = paths.profile_manifest(name);
-            if manifest_path.exists() {
-                if let Ok(m) = manifest::read(&manifest_path) {
-                    let total_size: u64 = m.files.values().map(|f| f.size).sum();
-                    println!(
-                        "  Files:          {} ({})",
-                        m.files.len(),
-                        format_size(total_size)
-                    );
-                    if let Some(loaded) = m.last_loaded {
-                        println!("  Last loaded:    {}", loaded.format("%Y-%m-%d %H:%M UTC"));
-                    }
+            if manifest_path.exists()
+                && let Ok(m) = manifest::read(&manifest_path)
+            {
+                let total_size: u64 = m.files.values().map(|f| f.size).sum();
+                println!(
+                    "  Files:          {} ({})",
+                    m.files.len(),
+                    format_size(total_size)
+                );
+                if let Some(loaded) = m.last_loaded {
+                    println!("  Last loaded:    {}", loaded.format("%Y-%m-%d %H:%M UTC"));
+                }
 
-                    // Integrity check against stored profile.
-                    let files_dir = paths.profile_files_dir(name);
-                    match checksum::verify_manifest(&files_dir, &m.files) {
-                        Ok(mismatches) if mismatches.is_empty() => {
-                            println!(
-                                "  Integrity:      {} all {} files verified",
-                                style("✓").green(),
-                                m.files.len()
-                            );
-                        }
-                        Ok(mismatches) => {
-                            println!(
-                                "  Integrity:      {} {} file(s) differ",
-                                style("✗").red(),
-                                mismatches.len()
-                            );
-                        }
-                        Err(_) => {
-                            println!("  Integrity:      {}", style("error reading files").red());
-                        }
+                // Integrity check against stored profile.
+                let files_dir = paths.profile_files_dir(name);
+                match checksum::verify_manifest(&files_dir, &m.files) {
+                    Ok(mismatches) if mismatches.is_empty() => {
+                        println!(
+                            "  Integrity:      {} all {} files verified",
+                            style("✓").green(),
+                            m.files.len()
+                        );
                     }
+                    Ok(mismatches) => {
+                        println!(
+                            "  Integrity:      {} {} file(s) differ",
+                            style("✗").red(),
+                            mismatches.len()
+                        );
+                    }
+                    Err(_) => {
+                        println!("  Integrity:      {}", style("error reading files").red());
+                    }
+                }
 
-                    // Plugin health.
-                    let plugins_path = paths.profile_plugins(name);
-                    if plugins_path.exists() {
-                        if let Ok(bp) = plugins_manifest::read(&plugins_path) {
-                            println!("  Plugins:        {} blueprinted", bp.plugins.len());
-                        }
-                    }
+                // Plugin health.
+                let plugins_path = paths.profile_plugins(name);
+                if plugins_path.exists()
+                    && let Ok(bp) = plugins_manifest::read(&plugins_path)
+                {
+                    println!("  Plugins:        {} blueprinted", bp.plugins.len());
                 }
             }
         }
@@ -1084,26 +1084,26 @@ fn cmd_verify(cli: &Cli, paths: &PortalPaths, name: Option<&str>, fix_plugins: b
 
     // Plugin verification.
     let plugins_path = paths.profile_plugins(&name);
-    if plugins_path.exists() {
-        if let Ok(bp) = plugins_manifest::read(&plugins_path) {
-            println!("  Plugins:   {} blueprinted", bp.plugins.len());
-            if fix_plugins && !bp.plugins.is_empty() {
-                println!();
-                println!("  {}", style("Reinstalling plugins...").bold());
-                // verify --fix-plugins always does a full reinstall — it's
-                // the user's escape hatch when plugin code is missing or
-                // corrupt, so we deliberately bypass the diff fast-path.
-                let results = plugins::reinstall(&bp);
-                print_plugin_results(&results, cli.verbose);
-                let failed: Vec<_> = results.iter().filter(|r| !r.success).collect();
-                if !failed.is_empty() {
-                    println!(
-                        "\n  {} {}/{} plugins failed to install",
-                        style("!").yellow().bold(),
-                        failed.len(),
-                        results.len()
-                    );
-                }
+    if plugins_path.exists()
+        && let Ok(bp) = plugins_manifest::read(&plugins_path)
+    {
+        println!("  Plugins:   {} blueprinted", bp.plugins.len());
+        if fix_plugins && !bp.plugins.is_empty() {
+            println!();
+            println!("  {}", style("Reinstalling plugins...").bold());
+            // verify --fix-plugins always does a full reinstall — it's
+            // the user's escape hatch when plugin code is missing or
+            // corrupt, so we deliberately bypass the diff fast-path.
+            let results = plugins::reinstall(&bp);
+            print_plugin_results(&results, cli.verbose);
+            let failed: Vec<_> = results.iter().filter(|r| !r.success).collect();
+            if !failed.is_empty() {
+                println!(
+                    "\n  {} {}/{} plugins failed to install",
+                    style("!").yellow().bold(),
+                    failed.len(),
+                    results.len()
+                );
             }
         }
     }
@@ -1255,11 +1255,11 @@ fn cmd_import(cli: &Cli, paths: &PortalPaths, archive: &str) -> Result<()> {
 
     // Show summary of what was imported.
     let manifest_path = paths.profile_manifest(&name);
-    if manifest_path.exists() {
-        if let Ok(m) = manifest::read(&manifest_path) {
-            let total_size: u64 = m.files.values().map(|f| f.size).sum();
-            println!("  {} files ({})", m.files.len(), format_size(total_size));
-        }
+    if manifest_path.exists()
+        && let Ok(m) = manifest::read(&manifest_path)
+    {
+        let total_size: u64 = m.files.values().map(|f| f.size).sum();
+        println!("  {} files ({})", m.files.len(), format_size(total_size));
     }
 
     Ok(())

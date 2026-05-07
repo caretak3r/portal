@@ -122,35 +122,33 @@ pub fn determine_source(settings: &serde_json::Value, plugin_id: &str) -> Plugin
     if let Some(mkts) = settings
         .get("extraKnownMarketplaces")
         .and_then(|v| v.as_object())
+        && let Some(mkt) = mkts.get(marketplace_name)
+        && let Some(src) = mkt.get("source").and_then(|v| v.as_object())
     {
-        if let Some(mkt) = mkts.get(marketplace_name) {
-            if let Some(src) = mkt.get("source").and_then(|v| v.as_object()) {
-                let source_type = src.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        let source_type = src.get("source").and_then(|v| v.as_str()).unwrap_or("");
 
-                return match source_type {
-                    "github" => {
-                        let repo = src
-                            .get("repo")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        PluginSource::Github { repo }
-                    }
-                    "directory" => {
-                        let path = src
-                            .get("path")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        PluginSource::Local { path }
-                    }
-                    _ => PluginSource::Marketplace {
-                        marketplace: marketplace_name.to_string(),
-                        repo: String::new(),
-                    },
-                };
+        return match source_type {
+            "github" => {
+                let repo = src
+                    .get("repo")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                PluginSource::Github { repo }
             }
-        }
+            "directory" => {
+                let path = src
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                PluginSource::Local { path }
+            }
+            _ => PluginSource::Marketplace {
+                marketplace: marketplace_name.to_string(),
+                repo: String::new(),
+            },
+        };
     }
 
     // Fallback: standard marketplace plugin.

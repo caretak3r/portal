@@ -163,10 +163,10 @@ pub fn import(paths: &PortalPaths, archive_path: &Path, overwrite: bool) -> Resu
     // If the archive came from a legacy installation it may contain
     // `files/<rel>`. Migrate those into the CAS pool so loads work uniformly.
     let legacy_files = extracted_dir.join("files");
-    if legacy_files.is_dir() {
-        if let Ok(mf) = manifest::read(&extracted_dir.join("portal.json")) {
-            let _ = cas::migrate_profile_files(paths, &legacy_files, &mf.files);
-        }
+    if legacy_files.is_dir()
+        && let Ok(mf) = manifest::read(&extracted_dir.join("portal.json"))
+    {
+        let _ = cas::migrate_profile_files(paths, &legacy_files, &mf.files);
     }
 
     // Move extracted profile into place.

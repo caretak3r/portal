@@ -118,23 +118,22 @@ pub fn acquire_lock(paths: &PortalPaths) -> Result<PortalLock> {
         std::fs::create_dir_all(parent)?;
     }
 
-    if lock_path.exists() {
-        if let Ok(meta) = std::fs::metadata(&lock_path) {
-            if let Ok(modified) = meta.modified() {
-                let age = SystemTime::now()
-                    .duration_since(modified)
-                    .unwrap_or_default();
-                if age.as_secs() > 300 {
-                    warn!("removing stale lock file ({}s old)", age.as_secs());
-                    std::fs::remove_file(&lock_path)?;
-                } else {
-                    bail!(
-                        "Another portal operation is in progress (lock file exists). \
-                         If this is stale, delete: {}",
-                        lock_path.display()
-                    );
-                }
-            }
+    if lock_path.exists()
+        && let Ok(meta) = std::fs::metadata(&lock_path)
+        && let Ok(modified) = meta.modified()
+    {
+        let age = SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default();
+        if age.as_secs() > 300 {
+            warn!("removing stale lock file ({}s old)", age.as_secs());
+            std::fs::remove_file(&lock_path)?;
+        } else {
+            bail!(
+                "Another portal operation is in progress (lock file exists). \
+                 If this is stale, delete: {}",
+                lock_path.display()
+            );
         }
     }
 

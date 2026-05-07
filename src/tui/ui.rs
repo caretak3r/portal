@@ -287,15 +287,15 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     ]));
 
     // Plugin summary line
-    if let Some(ref bp) = profile.blueprint {
-        if !bp.plugins.is_empty() {
-            let plugin_names: Vec<&str> = bp.plugins.iter().map(|p| p.id.as_str()).collect();
-            header_lines.push(Line::from(""));
-            header_lines.push(Line::from(vec![
-                Span::styled("  plugins: ", label),
-                Span::raw(plugin_names.join(", ")),
-            ]));
-        }
+    if let Some(ref bp) = profile.blueprint
+        && !bp.plugins.is_empty()
+    {
+        let plugin_names: Vec<&str> = bp.plugins.iter().map(|p| p.id.as_str()).collect();
+        header_lines.push(Line::from(""));
+        header_lines.push(Line::from(vec![
+            Span::styled("  plugins: ", label),
+            Span::raw(plugin_names.join(", ")),
+        ]));
     }
 
     let total_size: u64 = m.files.values().map(|f| f.size).sum();
@@ -786,41 +786,41 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     ];
 
     // If there's an active profile, show what will change
-    if let Some(ref active_name) = app.active_profile {
-        if active_name != &profile.name {
-            let left = DiffSide::Profile(active_name);
-            let right = DiffSide::Profile(&profile.name);
-            if let Ok(diff) = diff_profiles(&app.paths, &left, &right) {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("Changes vs current (", dim),
-                    Span::styled(active_name, dim),
-                    Span::styled("):", dim),
-                ]));
-                if !diff.different_content.is_empty() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  ~ {} modified", diff.different_content.len()),
-                        modified,
-                    )]));
-                }
-                if !diff.only_right.is_empty() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  + {} added", diff.only_right.len()),
-                        added,
-                    )]));
-                }
-                if !diff.only_left.is_empty() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  - {} removed", diff.only_left.len()),
-                        removed,
-                    )]));
-                }
-                if !diff.shared_same.is_empty() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  = {} unchanged", diff.shared_same.len()),
-                        dim,
-                    )]));
-                }
+    if let Some(ref active_name) = app.active_profile
+        && active_name != &profile.name
+    {
+        let left = DiffSide::Profile(active_name);
+        let right = DiffSide::Profile(&profile.name);
+        if let Ok(diff) = diff_profiles(&app.paths, &left, &right) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Changes vs current (", dim),
+                Span::styled(active_name, dim),
+                Span::styled("):", dim),
+            ]));
+            if !diff.different_content.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  ~ {} modified", diff.different_content.len()),
+                    modified,
+                )]));
+            }
+            if !diff.only_right.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  + {} added", diff.only_right.len()),
+                    added,
+                )]));
+            }
+            if !diff.only_left.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  - {} removed", diff.only_left.len()),
+                    removed,
+                )]));
+            }
+            if !diff.shared_same.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  = {} unchanged", diff.shared_same.len()),
+                    dim,
+                )]));
             }
         }
     }
