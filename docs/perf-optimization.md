@@ -75,3 +75,38 @@ If load latency genuinely matters (vs. e.g. plugin reinstall, which is the bigge
 3. Or sidestep entirely: introduce a `portal-daemon` (LaunchAgent on macOS, systemd user unit on Linux) that handles GC, plugin diffing, and cache warmth. CLI becomes near-instant for the user, daemon eats the cleanup latency in the background.
 
 These are architecture changes, not optimization passes.
+
+## Real-corpus validation
+
+Synthetic corpus (180 files / 980 KB) is useful for tight measurement but underrepresents the floor. Re-ran against a `cp -cR` clone of a real `~/.claude` (63,815 raw files / 1.5 GB; 3,126 trackable / 58.7 MB after `EXCLUDED_PATTERNS`). Original `~/.claude` untouched throughout.
+
+Pre-R1 (`bb05b70`) vs R1 (`6515194` HEAD), hyperfine warmup 2 / runs 10:
+
+| Command | Pre-R1 | R1 HEAD | Δ |
+|---------|--------|---------|---|
+| load real-base (3,126 files, --no-backup) | 563.3 ± 10.0 ms | 551.8 ± 8.2 ms | -2.0% (-11.5 ms) |
+| toggle | 569.3 ± 4.4 ms | 560.6 ± 14.1 ms | -1.5% (-8.7 ms) |
+| save (warm) | — | 231.9 ± 1.9 ms | CPU-bound, 151 ms user (sha256) |
+| status | — | 8.6 ± 0.2 ms | scales with file count |
+| list | — | 5.3 ± 0.2 ms | constant |
+| load WITH backup | — | 0.79 s | +240 ms for tar.zst (58 MB → 11 MB) |
+| load WITH plugins (delta no-op) | — | 1.18 s | 4 plugins "already current" — diff path skips reinstall |
+
+**Scaling observation.** R1's relative win shrinks at scale: ~5% on 180-file synthetic, ~2% on 3,126-file real. R1 saves ~360 syscalls per load on synthetic, ~6,250 on real, but the architectural floor (clonefile loop + post-swap `remove_dir_all`) grows linearly faster than fixed-overhead syscall savings can keep up with. Direction is consistent — R1 helps every corpus size.
+
+**Architectural ceiling translates upward.** The ~30 ms ceiling on synthetic becomes ~520 ms on real. Almost all of that is irreducible without redesigning crash-recovery (see Round 3 candidates above).
+
+## Pre-existing bugs surfaced during validation
+
+Not introduced by this work, not in scope, but worth flagging:
+
+1. **`portal verify <profile>` is broken for CAS-mode profiles.** Verify expects content under `<profile>/files/<rel>` but CAS-mode profiles store hashes only — actual bytes live in `objects/<sha>/<rest>`. Result: every file reports `(expected sha256:..., got <missing>)` and verify exits non-zero. The same root cause produces `status`'s `Integrity: ✗ N file(s) differ` line.
+2. **`portal undo` after a `--no-backup` load** errors with `Backup for last operation not found: .../backups/no-backup-skipped`. The state file records the sentinel path verbatim and `undo` doesn't recognize the sentinel. Should fail more cleanly with "previous load used --no-backup, nothing to undo".
+
+## Quality gates passed (R1 HEAD)
+
+- `cargo test --release`: 85 passes, 0 failures across 20 test suites
+- `cargo fmt --check`: clean
+- `cargo clippy --release --bins -- -D warnings`: clean
+- Real-corpus golden checksum stable across multiple loads
+- Original `~/.claude` byte-identical pre/post session
