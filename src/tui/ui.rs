@@ -1,12 +1,13 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph},
 };
 
 use crate::config::Theme;
+use crate::core::clone::Category;
 use crate::core::diff::{DiffSide, diff_profiles};
 
 use super::app::{App, NewProfileMode, View};
@@ -29,6 +30,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::SaveDialog => render_save_dialog(frame, app, right_pane),
         View::LoadConfirm => render_load_confirm(frame, app, right_pane),
         View::CloneDialog => render_clone_dialog(frame, app, right_pane),
+        View::FilePicker => render_file_picker(frame, app, right_pane),
         View::ThemePicker => {
             render_detail(frame, app, right_pane);
             render_theme_picker(frame, app, frame.area());
@@ -317,7 +319,14 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(header, header_area);
 
     // ── File tree ──
-    let tree_block = Block::default().borders(Borders::LEFT | Borders::RIGHT);
+    let tree_title = if app.tree_show_all {
+        " Files (all) * "
+    } else {
+        " Files (profile) * "
+    };
+    let tree_block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT)
+        .title(Span::styled(tree_title, Style::default().fg(Color::DarkGray)));
 
     let inner = tree_block.inner(tree_area);
     frame.render_widget(tree_block, tree_area);
@@ -355,16 +364,31 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default()
         };
 
-        let icon_style = if row.is_dir {
-            Style::default().fg(Color::Yellow)
+        let (icon_style, name_style) = if row.runtime {
+            // Runtime-only items: dim gray, not tracked by the profile
+            (
+                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray),
+            )
+        } else if row.is_dir {
+            (
+                Style::default().fg(Color::Yellow),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )
         } else {
-            Style::default().fg(Color::Green)
+            (Style::default().fg(Color::Green), Style::default())
         };
 
         let name_span = if row.is_dir {
             Span::styled(&row.label, icon_style.add_modifier(Modifier::BOLD))
         } else {
-            Span::styled(format!("  {}", row.label), Style::default())
+            Span::styled(format!("  {}", row.label), name_style)
+        };
+
+        let runtime_tag = if row.runtime {
+            Span::styled("  [runtime]", Style::default().fg(Color::DarkGray))
+        } else {
+            Span::raw("")
         };
 
         let size_span = Span::styled(
@@ -372,7 +396,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Style::default().fg(Color::DarkGray),
         );
 
-        let line = Line::from(vec![Span::raw(indent), name_span, size_span]);
+        let line = Line::from(vec![Span::raw(indent), name_span, runtime_tag, size_span]);
 
         let line_area = ratatui::layout::Rect::new(inner.x, y, inner.width, 1);
         let para = Paragraph::new(line).style(row_style);
@@ -407,7 +431,9 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("Enter", hint),
             Span::raw(" expand/collapse  "),
             Span::styled("l", hint),
-            Span::raw(" load"),
+            Span::raw(" load  "),
+            Span::styled("*", hint),
+            Span::raw(" all files"),
         ]),
         Line::from(vec![
             Span::styled(" Tab", hint),
@@ -955,7 +981,7 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
             "Plugins",
         ];
 
-        for (i, ((_, enabled), name)) in app
+        for (i, ((cat, enabled), name)) in app
             .clone_categories
             .iter()
             .zip(cat_names.iter())
@@ -963,11 +989,25 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
         {
             let field_idx = i + 2;
             let checkbox = if *enabled { "[x]" } else { "[ ]" };
-            // CLAUDE.md category gets a hint when disabled by fresh_md
+            // Build a suffix: fresh_md hint, or pick count for pickable categories.
+            let pickable = matches!(
+                cat,
+                Category::Skills
+                    | Category::Rules
+                    | Category::Commands
+                    | Category::Agents
+            );
             let suffix = if i == 0 && app.clone_fresh_md {
-                " (using empty instead)"
+                " (using empty instead)".to_string()
+            } else if *enabled && pickable {
+                match app.clone_file_picks.get(cat) {
+                    Some(picks) if !picks.is_empty() => {
+                        format!(" ({} files)  →", picks.len())
+                    }
+                    _ => "  →".to_string(),
+                }
             } else {
-                ""
+                String::new()
             };
             let style = if app.clone_field_index == field_idx {
                 active_field
@@ -1214,6 +1254,58 @@ fn render_help(frame: &mut Frame, area: ratatui::layout::Rect) {
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+fn render_file_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let cat_name = format!("{:?}", app.file_picker_category);
+    let selected_count = app.file_picker_items.iter().filter(|(_, on)| *on).count();
+    let total = app.file_picker_items.len();
+    let title = format!(" Pick {cat_name} files  ({selected_count}/{total} selected) ");
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let [list_area, help_area] = Layout::new(
+        Direction::Vertical,
+        [Constraint::Min(0), Constraint::Length(1)],
+    )
+    .areas(inner);
+
+    if app.file_picker_items.is_empty() {
+        let msg = Paragraph::new("No files in this category.");
+        frame.render_widget(msg, list_area);
+    } else {
+        let items: Vec<ListItem<'_>> = app
+            .file_picker_items
+            .iter()
+            .enumerate()
+            .map(|(i, (path, on))| {
+                let check = if *on { "[x]" } else { "[ ]" };
+                let style = if i == app.file_picker_cursor {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("  {check} {path}")).style(style)
+            })
+            .collect();
+        frame.render_widget(List::new(items), list_area);
+    }
+
+    let help = Paragraph::new(Line::from(vec![
+        Span::styled("Space", Style::default().fg(Color::Cyan)),
+        Span::raw(" toggle  "),
+        Span::styled("a", Style::default().fg(Color::Cyan)),
+        Span::raw(" all/none  "),
+        Span::styled("Enter/Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" confirm"),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(help, help_area);
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {

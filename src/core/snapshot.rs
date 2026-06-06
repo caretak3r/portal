@@ -5,6 +5,7 @@ use crate::storage::{cas, manifest, meta, paths::PortalPaths, plugins_manifest};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -186,6 +187,9 @@ pub fn save_with_progress(
         let size = bytes.len() as u64;
         let hash = cas::write(paths, &bytes)?;
         let source = classify_source(&rel_str, &bytes);
+        let mode = std::fs::metadata(&src)
+            .ok()
+            .map(|m| m.permissions().mode());
 
         entries.insert(
             rel_str,
@@ -193,6 +197,7 @@ pub fn save_with_progress(
                 checksum: hash,
                 size,
                 source,
+                mode,
             },
         );
     }

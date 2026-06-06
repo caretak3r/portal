@@ -1,7 +1,9 @@
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 use console::style;
+use std::path::PathBuf;
 
+use portal::config;
 use portal::core::progress::ProgressReporter;
 use portal::core::{
     backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport,
@@ -140,6 +142,78 @@ enum Commands {
     Recover,
 }
 
+/// Search for an existing `.claude` directory: CWD first (interactive only), then `home_default`.
+///
+/// CWD search is restricted to interactive mode so test sandboxes (which set
+/// `HOME` but not `CWD`) don't accidentally pick up the project's own `.claude`.
+fn discover_claude_dir(home_default: &std::path::Path) -> Option<PathBuf> {
+    if is_interactive() {
+        if let Ok(cwd) = std::env::current_dir() {
+            let p = cwd.join(".claude");
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    if home_default.is_dir() {
+        return Some(home_default.to_path_buf());
+    }
+    None
+}
+
+/// On first run, confirm (or let the user choose) which `.claude` directory
+/// portal should manage. Saves the answer to `portal.config.toml` so subsequent
+/// runs skip the prompt.
+///
+/// Search priority: CWD/.claude → $HOME/.claude → ask.
+/// Returns a new `PortalPaths` with the confirmed directory applied.
+fn ensure_claude_dir_confirmed(paths: &PortalPaths) -> Result<PortalPaths> {
+    let config_path = paths.config_file();
+    let mut cfg = config::load(&config_path).unwrap_or_default();
+
+    if cfg.claude_dir.is_none() {
+        let found = discover_claude_dir(&paths.claude_root());
+        let confirmed = if is_interactive() {
+            if let Some(ref found_path) = found {
+                let ok = dialoguer::Confirm::new()
+                    .with_prompt(format!(
+                        "Is this the .claude directory you want to manage: {}?",
+                        found_path.display()
+                    ))
+                    .default(true)
+                    .interact()?;
+                if ok {
+                    found_path.clone()
+                } else {
+                    let raw: String = dialoguer::Input::new()
+                        .with_prompt("Path to your .claude directory")
+                        .interact_text()?;
+                    PathBuf::from(raw)
+                }
+            } else {
+                // Nothing found anywhere — ask directly.
+                let raw: String = dialoguer::Input::new()
+                    .with_prompt("No .claude directory found. Enter the full path")
+                    .interact_text()?;
+                PathBuf::from(raw)
+            }
+        } else {
+            // Non-interactive: use discovered path or fall back to $HOME/.claude.
+            found.unwrap_or_else(|| paths.claude_root())
+        };
+
+        cfg.claude_dir = Some(confirmed);
+        paths.ensure_dirs()?;
+        config::save(&cfg, &config_path)?;
+    }
+
+    if let Some(dir) = cfg.claude_dir {
+        Ok(paths.clone().with_claude_override(dir))
+    } else {
+        Ok(paths.clone())
+    }
+}
+
 /// Run the CLI entry point.
 ///
 /// # Errors
@@ -148,6 +222,7 @@ enum Commands {
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let paths = PortalPaths::detect();
+    let paths = ensure_claude_dir_confirmed(&paths)?;
 
     match &cli.command {
         None => cmd_no_subcommand(&paths),
@@ -1170,6 +1245,7 @@ fn cmd_clone(
         only: only_cats,
         without: without_cats,
         fresh_claude_md,
+        file_picks: None, // CLI clone operates at category granularity only
     };
 
     let progress = CliProgress::new("Cloning");

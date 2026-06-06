@@ -22,6 +22,7 @@ fn test_manifest_write_and_read() {
                 checksum: "sha256:abc".into(),
                 size: 100,
                 source: FileSource::User,
+                mode: None,
             },
         )]),
         excluded_patterns: vec!["sessions/**".into()],

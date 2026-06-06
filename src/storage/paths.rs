@@ -4,6 +4,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct PortalPaths {
     home: PathBuf,
+    /// Override for the managed `.claude` directory. When set, `claude_root()`
+    /// returns this path instead of `$HOME/.claude`. Persisted in config.
+    claude_override: Option<PathBuf>,
 }
 
 impl PortalPaths {
@@ -16,13 +19,20 @@ impl PortalPaths {
     #[allow(clippy::expect_used)]
     pub fn detect() -> Self {
         let home = dirs::home_dir().expect("cannot detect home directory");
-        Self { home }
+        Self { home, claude_override: None }
     }
 
     /// Create paths rooted at a specific home directory (useful for testing).
     #[must_use]
-    pub const fn with_home(home: PathBuf) -> Self {
-        Self { home }
+    pub fn with_home(home: PathBuf) -> Self {
+        Self { home, claude_override: None }
+    }
+
+    /// Override which `.claude` directory this instance manages.
+    #[must_use]
+    pub fn with_claude_override(mut self, dir: PathBuf) -> Self {
+        self.claude_override = Some(dir);
+        self
     }
 
     #[must_use]
@@ -116,12 +126,17 @@ impl PortalPaths {
 
     #[must_use]
     pub fn claude_root(&self) -> PathBuf {
-        self.home.join(".claude")
+        self.claude_override
+            .clone()
+            .unwrap_or_else(|| self.home.join(".claude"))
     }
 
     #[must_use]
     pub fn claude_old(&self) -> PathBuf {
-        self.home.join(".claude.portal-old")
+        let claude = self.claude_root();
+        let parent = claude.parent().unwrap_or_else(|| std::path::Path::new("/"));
+        let stem = claude.file_name().unwrap_or_default().to_string_lossy();
+        parent.join(format!("{stem}.portal-old"))
     }
 
     /// Create all required Portal directories.

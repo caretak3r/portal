@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Top-level portal configuration, loaded from `portal.config.toml`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -11,6 +11,10 @@ pub struct PortalConfig {
     pub plugins: PluginsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    /// The `.claude` directory this portal instance manages.
+    /// Confirmed on first run and persisted here; overrides `$HOME/.claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_dir: Option<PathBuf>,
 }
 
 /// Color theme for the TUI. Themes only affect rendering — keybindings,
@@ -120,6 +124,20 @@ const fn default_compression_level() -> u32 {
 }
 const fn default_reinstall_timeout() -> u64 {
     30
+}
+
+/// Persist configuration to a TOML file, creating parent directories as needed.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails or the file cannot be written.
+pub fn save(config: &PortalConfig, path: &Path) -> Result<()> {
+    let content = toml::to_string_pretty(config)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)?;
+    Ok(())
 }
 
 /// Load configuration from a TOML file, returning defaults if the file does not exist.

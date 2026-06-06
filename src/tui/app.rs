@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::Receiver;
 use std::thread::JoinHandle;
 use std::time::Instant;
+
+use walkdir::WalkDir;
 
 use ratatui::widgets::ListState;
 
@@ -30,6 +32,9 @@ pub enum View {
     LoadInProgress,
     /// Fuzzy-search overlay for fast profile selection (`/` from Detail).
     QuickSwitch,
+    /// Per-file picker for a specific clone category (Skills/Rules/Commands/Agents).
+    /// Entered from `CloneDialog` via the Right arrow on a pickable category row.
+    FilePicker,
 }
 
 /// Whether the new-profile dialog creates an empty profile or clones from selected.
@@ -62,10 +67,14 @@ pub enum TreeNode {
         children: Vec<Self>,
         total_size: u64,
         file_count: usize,
+        /// True when every file under this dir is runtime-only (not in the profile manifest).
+        runtime: bool,
     },
     File {
         name: String,
         size: u64,
+        /// True when this file is present on disk but not tracked in the profile manifest.
+        runtime: bool,
     },
 }
 
@@ -76,20 +85,23 @@ pub struct TreeRow {
     pub is_dir: bool,
     pub dir_path: Option<String>, // full dir path for expand/collapse key
     pub size_label: String,
+    /// True when the row represents a runtime-only item (not in the profile manifest).
+    pub runtime: bool,
 }
 
-/// Build a tree from a flat map of `relative_path -> size`.
-pub fn build_file_tree(files: &BTreeMap<String, u64>) -> Vec<TreeNode> {
-    // Intermediate: nested BTreeMap of path segments
+/// Build a tree from a flat map of `relative_path -> (size, is_runtime)`.
+///
+/// `is_runtime` marks files that are present on disk but not tracked in the profile manifest.
+pub fn build_file_tree(files: &BTreeMap<String, (u64, bool)>) -> Vec<TreeNode> {
     let mut root: BTreeMap<String, DirBuilder> = BTreeMap::new();
 
-    for (path, &size) in files {
+    for (path, &(size, runtime)) in files {
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() == 1 {
             root.entry(parts[0].to_string())
-                .or_insert_with(|| DirBuilder::Leaf(size));
+                .or_insert_with(|| DirBuilder::Leaf(size, runtime));
         } else {
-            insert_into(&mut root, &parts, size);
+            insert_into(&mut root, &parts, size, runtime);
         }
     }
 
@@ -97,21 +109,21 @@ pub fn build_file_tree(files: &BTreeMap<String, u64>) -> Vec<TreeNode> {
 }
 
 enum DirBuilder {
-    Leaf(u64),
+    Leaf(u64, bool), // (size, runtime)
     Dir(BTreeMap<String, Self>),
 }
 
-fn insert_into(map: &mut BTreeMap<String, DirBuilder>, parts: &[&str], size: u64) {
+fn insert_into(map: &mut BTreeMap<String, DirBuilder>, parts: &[&str], size: u64, runtime: bool) {
     let key = parts[0].to_string();
     if parts.len() == 1 {
-        map.insert(key, DirBuilder::Leaf(size));
+        map.insert(key, DirBuilder::Leaf(size, runtime));
         return;
     }
     let entry = map
         .entry(key)
         .or_insert_with(|| DirBuilder::Dir(BTreeMap::new()));
     if let DirBuilder::Dir(children) = entry {
-        insert_into(children, &parts[1..], size);
+        insert_into(children, &parts[1..], size, runtime);
     }
 }
 
@@ -119,16 +131,21 @@ fn flatten_builders(map: BTreeMap<String, DirBuilder>) -> Vec<TreeNode> {
     let mut nodes = Vec::new();
     for (name, builder) in map {
         match builder {
-            DirBuilder::Leaf(size) => nodes.push(TreeNode::File { name, size }),
+            DirBuilder::Leaf(size, runtime) => nodes.push(TreeNode::File { name, size, runtime }),
             DirBuilder::Dir(children) => {
                 let child_nodes = flatten_builders(children);
                 let total_size = sum_tree_size(&child_nodes);
                 let file_count = count_tree_files(&child_nodes);
+                // A dir is runtime-only when every file under it is runtime.
+                let runtime = child_nodes.iter().all(|n| match n {
+                    TreeNode::File { runtime, .. } | TreeNode::Dir { runtime, .. } => *runtime,
+                });
                 nodes.push(TreeNode::Dir {
                     name,
                     children: child_nodes,
                     total_size,
                     file_count,
+                    runtime,
                 });
             }
         }
@@ -186,6 +203,7 @@ pub fn visible_rows(nodes: &[TreeNode], expanded: &HashSet<String>, prefix: &str
                 children,
                 total_size,
                 file_count,
+                runtime,
             } => {
                 let dir_path = if prefix.is_empty() {
                     name.clone()
@@ -200,18 +218,20 @@ pub fn visible_rows(nodes: &[TreeNode], expanded: &HashSet<String>, prefix: &str
                     is_dir: true,
                     dir_path: Some(dir_path.clone()),
                     size_label: format!("{} files, {}", file_count, fmt_size(*total_size)),
+                    runtime: *runtime,
                 });
                 if is_expanded {
                     rows.extend(visible_rows(children, expanded, &dir_path));
                 }
             }
-            TreeNode::File { name, size } => {
+            TreeNode::File { name, size, runtime } => {
                 rows.push(TreeRow {
                     depth,
                     label: name.clone(),
                     is_dir: false,
                     dir_path: None,
                     size_label: fmt_size(*size),
+                    runtime: *runtime,
                 });
             }
         }
@@ -281,6 +301,9 @@ pub struct App {
     pub tree_rows: Vec<TreeRow>,
     /// Which profile the cached tree belongs to.
     tree_profile: Option<String>,
+    /// When true, the file tree includes runtime-only items from `~/.claude`
+    /// (excluded from snapshots: .git, plugins/cache, etc.) shown dimmed.
+    pub tree_show_all: bool,
 
     /// Active TUI color theme.
     pub theme: Theme,
@@ -303,6 +326,17 @@ pub struct App {
     /// Cursor position within `quick_matches` — drives the highlighted row
     /// and the target of an `Enter` keypress.
     pub quick_cursor: usize,
+
+    // ── FilePicker overlay (→ from CloneDialog category rows) ──
+    /// Which category is being picked in the FilePicker view.
+    pub file_picker_category: Category,
+    /// Items in the file picker: (relative_path, selected).
+    pub file_picker_items: Vec<(String, bool)>,
+    /// Cursor row in the file picker list.
+    pub file_picker_cursor: usize,
+    /// Accumulated per-category file selections for the pending clone.
+    /// Cleared when the CloneDialog is first opened.
+    pub clone_file_picks: HashMap<Category, HashSet<String>>,
 }
 
 /// Per-load options toggled inside the `LoadConfirm` dialog. Mirrors the CLI
@@ -386,6 +420,7 @@ impl App {
             file_tree: Vec::new(),
             tree_rows: Vec::new(),
             tree_profile: None,
+            tree_show_all: false,
             theme,
             theme_cursor,
             load_in_flight: None,
@@ -393,6 +428,10 @@ impl App {
             quick_query: String::new(),
             quick_matches: Vec::new(),
             quick_cursor: 0,
+            file_picker_category: Category::Skills,
+            file_picker_items: Vec::new(),
+            file_picker_cursor: 0,
+            clone_file_picks: HashMap::new(),
         };
         app.refresh()?;
         if !app.profiles.is_empty() {
@@ -601,15 +640,45 @@ impl App {
             return;
         };
 
-        let file_map: BTreeMap<String, u64> = profile
+        // Start with manifest files (runtime=false).
+        let mut file_map: BTreeMap<String, (u64, bool)> = profile
             .manifest
             .files
             .iter()
-            .map(|(k, v)| (k.clone(), v.size))
+            .map(|(k, v)| (k.clone(), (v.size, false)))
             .collect();
+
+        // In show-all mode, overlay live ~/.claude files not in the manifest.
+        if self.tree_show_all {
+            let claude_dir = self.paths.claude_root();
+            if claude_dir.is_dir() {
+                for entry in WalkDir::new(&claude_dir).min_depth(1) {
+                    let Ok(e) = entry else { continue };
+                    if !e.file_type().is_file() {
+                        continue;
+                    }
+                    let Ok(rel) = e.path().strip_prefix(&claude_dir) else {
+                        continue;
+                    };
+                    let rel_str = rel.to_string_lossy().to_string();
+                    // Insert only if not already tracked by the manifest.
+                    if !file_map.contains_key(&rel_str) {
+                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        file_map.insert(rel_str, (size, true));
+                    }
+                }
+            }
+        }
 
         self.file_tree = build_file_tree(&file_map);
         self.tree_rows = visible_rows(&self.file_tree, &self.expanded_dirs, "");
+    }
+
+    /// Toggle the "show all files" mode and force a full tree rebuild.
+    pub fn toggle_tree_all(&mut self) {
+        self.tree_show_all = !self.tree_show_all;
+        self.tree_profile = None; // force rebuild even if profile hasn't changed
+        self.rebuild_tree();
     }
 
     /// Toggle expand/collapse of the directory at the current cursor.

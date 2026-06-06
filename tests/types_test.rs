@@ -16,6 +16,7 @@ fn test_profile_manifest_roundtrip() {
                 checksum: "sha256:abc123".into(),
                 size: 1024,
                 source: portal::core::profile::FileSource::User,
+                mode: None,
             },
         )]),
         excluded_patterns: vec!["sessions/**".into()],

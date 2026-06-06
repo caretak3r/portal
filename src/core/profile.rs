@@ -22,6 +22,10 @@ pub struct FileEntry {
     pub checksum: String,
     pub size: u64,
     pub source: FileSource,
+    /// Unix file mode bits (e.g. 0o755 for executable scripts).
+    /// Recorded at save time and restored on load so hook exec bits survive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

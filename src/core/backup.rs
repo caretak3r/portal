@@ -28,6 +28,11 @@ pub struct BackupInfo {
 /// encoding fails.
 pub fn create(paths: &PortalPaths, op_type: &str, _profile_name: &str) -> Result<PathBuf> {
     let claude_dir = paths.claude_root();
+    anyhow::ensure!(
+        claude_dir.exists(),
+        ".claude directory not found at {}; run `portal` without arguments to reconfigure",
+        claude_dir.display()
+    );
     let backups_dir = paths.backups_dir();
     std::fs::create_dir_all(&backups_dir)?;
 
@@ -41,6 +46,9 @@ pub fn create(paths: &PortalPaths, op_type: &str, _profile_name: &str) -> Result
         .with_context(|| format!("creating backup file: {}", backup_path.display()))?;
     let encoder = zstd::Encoder::new(file, 3)?;
     let mut tar = tar::Builder::new(encoder);
+    // Store symlinks as-is rather than dereferencing — avoids ENOENT on
+    // broken symlinks (e.g. ~/.claude/debug/latest -> deleted file).
+    tar.follow_symlinks(false);
 
     tar.append_dir_all("claude", &claude_dir)
         .context("archiving .claude/ directory")?;

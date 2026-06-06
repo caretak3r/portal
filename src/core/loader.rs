@@ -1,6 +1,7 @@
 use crate::core::profile::ProfileManifest;
 use crate::core::progress::ProgressReporter;
-use crate::core::{backup, checksum, plugins, safety, skeleton};
+use crate::core::{backup, checksum, plugins, safety, skeleton, snapshot};
+use std::os::unix::fs::PermissionsExt;
 use crate::storage::{cas, manifest, paths::PortalPaths, plugins_manifest, state};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -191,6 +192,14 @@ pub fn load_with_progress(
         }
     }
 
+    // 6.5. Carry forward runtime/infrastructure items excluded from profile
+    //      snapshots: plugin cache, git history, project conversations, etc.
+    //      These are not profile-specific and must survive profile switches.
+    if claude_dir.exists() {
+        progress.phase("Preserving runtime data");
+        preserve_runtime_data(&claude_dir, &build_dir)?;
+    }
+
     // 7. Atomic swap.
     progress.phase("Atomic swap");
     let old_dir = paths.claude_old();
@@ -334,6 +343,10 @@ fn place_from_cas_parallel(
     for (rel, entry) in &manifest.files {
         let dest = build_dir.join(rel);
         cas::place_fresh(paths, &entry.checksum, &dest)?;
+        // Restore Unix mode bits so executable hook scripts keep their +x.
+        if let Some(mode) = entry.mode {
+            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode));
+        }
         n += 1;
         progress.tick(n.min(total), rel);
     }
@@ -366,6 +379,9 @@ fn copy_dir_with_progress(src: &Path, dst: &Path, progress: &dyn ProgressReporte
             std::fs::copy(entry.path(), &target).with_context(|| {
                 format!("copying {} -> {}", entry.path().display(), target.display())
             })?;
+            if let Ok(meta) = entry.metadata() {
+                let _ = std::fs::set_permissions(&target, meta.permissions());
+            }
             count += 1;
             progress.tick(count, &rel.to_string_lossy());
         }
@@ -403,6 +419,45 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             std::fs::copy(entry.path(), &target).with_context(|| {
                 format!("copying {} -> {}", entry.path().display(), target.display())
             })?;
+            if let Ok(meta) = entry.metadata() {
+                let _ = std::fs::set_permissions(&target, meta.permissions());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy items excluded from profile snapshots (runtime/infrastructure) from
+/// `src` into `dst` so they survive the atomic profile swap.
+///
+/// Copies everything in `EXCLUDED_PATTERNS` plus the top-level `.git`
+/// directory (which is excluded via `EXCLUDED_SEGMENTS` at any depth but
+/// must persist across profile switches as the config repo history).
+fn preserve_runtime_data(src: &Path, dst: &Path) -> Result<()> {
+    // .git is excluded at any depth via EXCLUDED_SEGMENTS — add it explicitly
+    // for top-level preservation.
+    let extra: &[&str] = &[".git"];
+    let patterns = snapshot::EXCLUDED_PATTERNS
+        .iter()
+        .copied()
+        .chain(extra.iter().copied());
+
+    for pattern in patterns {
+        let src_path = src.join(pattern);
+        if !src_path.exists() {
+            continue;
+        }
+        let dst_path = dst.join(pattern);
+        if let Some(parent) = dst_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating parent for preserved item: {pattern}"))?;
+        }
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)
+                .with_context(|| format!("preserving directory: {pattern}"))?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)
+                .with_context(|| format!("preserving file: {pattern}"))?;
         }
     }
     Ok(())

@@ -63,6 +63,7 @@ fn test_clone_all() {
         only: None,
         without: None,
         fresh_claude_md: false,
+        file_picks: None,
     };
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
@@ -92,6 +93,7 @@ fn test_clone_only_skills() {
         only: Some(vec![Category::Skills]),
         without: None,
         fresh_claude_md: false,
+        file_picks: None,
     };
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
@@ -121,6 +123,7 @@ fn test_clone_without_memory() {
         only: None,
         without: Some(vec![Category::Memory]),
         fresh_claude_md: false,
+        file_picks: None,
     };
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
@@ -146,6 +149,7 @@ fn test_clone_fresh_claude_md() {
         only: None,
         without: None,
         fresh_claude_md: true,
+        file_picks: None,
     };
     let result = clone::clone_profile(&paths, &opts).unwrap();
 
@@ -172,6 +176,7 @@ fn test_clone_target_already_exists() {
         only: None,
         without: None,
         fresh_claude_md: false,
+        file_picks: None,
     };
     clone::clone_profile(&paths, &opts).unwrap();
 

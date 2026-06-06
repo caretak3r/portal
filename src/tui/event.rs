@@ -1,9 +1,11 @@
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::app::{App, LoadInFlight, LoadOptions, NewProfileMode, View};
+use crate::core::clone::{Category, categorize_file};
 use crate::core::progress::{ChannelProgress, LoadEvent};
 
 /// Poll for input and dispatch to the appropriate handler.
@@ -53,6 +55,7 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
         // there's no in-flight cancellation in the loader, and accidental
         // input could swap views and lose the progress modal.
         View::LoadInProgress => {}
+        View::FilePicker => handle_file_picker(app, key.code),
     }
 
     Ok(app.should_quit)
@@ -154,6 +157,9 @@ fn handle_main(app: &mut App, code: KeyCode) {
             app.view = View::LoadConfirm;
         }
 
+        KeyCode::Char('*') if app.view == View::Detail => {
+            app.toggle_tree_all();
+        }
         KeyCode::Char('l') if app.view == View::Detail && app.selected_profile().is_some() => {
             app.load_options = LoadOptions::default();
             app.view = View::LoadConfirm;
@@ -205,6 +211,7 @@ fn handle_main(app: &mut App, code: KeyCode) {
                 .collect();
             app.clone_fresh_md = false;
             app.clone_field_index = 0;
+            app.clone_file_picks.clear();
             app.view = View::CloneDialog;
         }
         KeyCode::Char('n') => {
@@ -221,6 +228,7 @@ fn handle_main(app: &mut App, code: KeyCode) {
                 .collect();
             app.clone_fresh_md = false;
             app.clone_field_index = 0;
+            app.clone_file_picks.clear();
             app.view = View::CloneDialog;
         }
         KeyCode::Esc => {
@@ -325,6 +333,56 @@ fn handle_help(app: &mut App, code: KeyCode) {
         KeyCode::Esc | KeyCode::Char('?' | 'q') => app.view = View::Detail,
         _ => {}
     }
+}
+
+fn handle_file_picker(app: &mut App, code: KeyCode) {
+    let len = app.file_picker_items.len();
+    match code {
+        // Confirm and persist picks back to the clone dialog.
+        KeyCode::Esc | KeyCode::Enter => {
+            let selected: HashSet<String> = app
+                .file_picker_items
+                .iter()
+                .filter(|(_, on)| *on)
+                .map(|(p, _)| p.clone())
+                .collect();
+            app.clone_file_picks.insert(app.file_picker_category, selected);
+            app.view = View::CloneDialog;
+        }
+        KeyCode::Down | KeyCode::Char('j') if len > 0 => {
+            app.file_picker_cursor = (app.file_picker_cursor + 1) % len;
+        }
+        KeyCode::Up | KeyCode::Char('k') if len > 0 => {
+            app.file_picker_cursor = if app.file_picker_cursor == 0 {
+                len - 1
+            } else {
+                app.file_picker_cursor - 1
+            };
+        }
+        // Space toggles the highlighted file.
+        KeyCode::Char(' ') => {
+            if let Some(item) = app.file_picker_items.get_mut(app.file_picker_cursor) {
+                item.1 = !item.1;
+            }
+        }
+        // 'a' toggles all files at once.
+        KeyCode::Char('a') => {
+            let all_on = app.file_picker_items.iter().all(|(_, s)| *s);
+            for item in &mut app.file_picker_items {
+                item.1 = !all_on;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Returns true for categories that hold many individual files and therefore
+/// benefit from a per-file picker (directory-based categories).
+fn is_pickable(cat: Category) -> bool {
+    matches!(
+        cat,
+        Category::Skills | Category::Rules | Category::Commands | Category::Agents
+    )
 }
 
 #[allow(clippy::missing_const_for_fn)] // KeyCode match is not const-compatible
@@ -444,6 +502,39 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
                 app.clone_categories[0].1 = false;
             }
         }
+        // Right arrow on a pickable category opens the per-file picker.
+        KeyCode::Right
+            if app.clone_mode == NewProfileMode::CloneFrom
+                && app.clone_field_index >= 2
+                && app.clone_field_index <= num_cats + 1 =>
+        {
+            let cat_idx = app.clone_field_index - 2;
+            let (cat, enabled) = app.clone_categories[cat_idx];
+            if enabled && is_pickable(cat) && let Some(source) = app.selected_profile() {
+                let existing_picks = app.clone_file_picks.get(&cat);
+                let mut items: Vec<(String, bool)> = source
+                    .manifest
+                    .files
+                    .keys()
+                    .filter(|p| categorize_file(p) == cat)
+                    .map(|p| {
+                        let selected = existing_picks
+                            .is_none_or(|s| s.is_empty() || s.contains(p.as_str()));
+                        (p.clone(), selected)
+                    })
+                    .collect();
+                items.sort_by(|a, b| a.0.cmp(&b.0));
+
+                if items.is_empty() {
+                    app.status_message = Some(format!("No files in {cat:?} category."));
+                } else {
+                    app.file_picker_category = cat;
+                    app.file_picker_items = items;
+                    app.file_picker_cursor = 0;
+                    app.view = View::FilePicker;
+                }
+            }
+        }
         KeyCode::Backspace if app.clone_field_index == 0 => {
             app.clone_name.pop();
         }
@@ -469,11 +560,20 @@ fn execute_clone(app: &mut App) {
         return;
     };
 
-    let only: Vec<crate::core::clone::Category> = app
+    let only: Vec<Category> = app
         .clone_categories
         .iter()
         .filter(|(_, enabled)| *enabled)
         .map(|(cat, _)| *cat)
+        .collect();
+
+    // Build per-file picks: only carry forward picks for enabled categories
+    // that actually have a non-empty selection set.
+    let file_picks: HashMap<Category, HashSet<String>> = app
+        .clone_file_picks
+        .iter()
+        .filter(|(cat, files)| only.contains(cat) && !files.is_empty())
+        .map(|(cat, files)| (*cat, files.clone()))
         .collect();
 
     let opts = crate::core::clone::CloneOptions {
@@ -483,6 +583,7 @@ fn execute_clone(app: &mut App) {
         only: Some(only),
         without: None,
         fresh_claude_md: app.clone_fresh_md,
+        file_picks: if file_picks.is_empty() { None } else { Some(file_picks) },
     };
 
     match crate::core::clone::clone_profile(&app.paths, &opts) {
@@ -537,6 +638,7 @@ fn execute_new_empty(app: &mut App) {
             checksum: hash,
             size: 0,
             source: crate::core::profile::FileSource::Skeleton,
+            mode: None,
         },
     );
 

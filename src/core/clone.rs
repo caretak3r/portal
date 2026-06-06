@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::core::profile::{FileEntry, FileSource, ProfileManifest, ProfileMeta};
 use crate::core::progress::ProgressReporter;
@@ -78,7 +78,7 @@ pub fn parse_categories(input: &str) -> Result<Vec<Category>> {
 }
 
 /// Determine which category a file path belongs to.
-fn categorize_file(rel_path: &str) -> Category {
+pub fn categorize_file(rel_path: &str) -> Category {
     if rel_path == "CLAUDE.md" {
         Category::ClaudeMd
     } else if rel_path == "settings.json" || rel_path.starts_with(".claude/settings") {
@@ -109,6 +109,10 @@ pub struct CloneOptions<'a> {
     pub only: Option<Vec<Category>>,
     pub without: Option<Vec<Category>>,
     pub fresh_claude_md: bool,
+    /// Per-category file filter for fine-grained selection.
+    /// If a category key is present with a non-empty set, only those specific
+    /// relative paths are copied. Missing key or empty set → all files in category.
+    pub file_picks: Option<HashMap<Category, HashSet<String>>>,
 }
 
 /// Result of a clone operation.
@@ -202,6 +206,20 @@ pub fn clone_profile_with_progress(
             continue;
         }
 
+        // Per-file filter: if the caller specified picks for this category,
+        // only include files in the allowed set (empty set = include all).
+        if opts
+            .file_picks
+            .as_ref()
+            .and_then(|p| p.get(&cat))
+            .is_some_and(|allowed| {
+                !allowed.is_empty() && !allowed.contains(rel_path.as_str())
+            })
+        {
+            skipped += 1;
+            continue;
+        }
+
         // The source manifest already records the content hash. As long as the
         // CAS object exists, the target profile can reference it directly.
         if cas::exists(paths, &entry.checksum) {
@@ -231,6 +249,7 @@ pub fn clone_profile_with_progress(
                 checksum: hash,
                 size: 0,
                 source: FileSource::Skeleton,
+                mode: None,
             },
         );
     }
