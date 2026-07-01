@@ -397,7 +397,8 @@ fn handle_file_picker(app: &mut App, code: KeyCode) {
                     }
                 }
             }
-            app.clone_file_picks.insert(app.file_picker_category, selected);
+            app.clone_file_picks
+                .insert(app.file_picker_category, selected);
             app.view = View::CloneDialog;
         }
         KeyCode::Down | KeyCode::Char('j') if len > 0 => {
@@ -571,13 +572,21 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
         {
             let cat_idx = app.clone_field_index - 2;
             let (cat, enabled) = app.clone_categories[cat_idx];
-            if enabled && is_pickable(cat) && let Some(source) = app.selected_profile() {
+            if enabled
+                && is_pickable(cat)
+                && let Some(source) = app.selected_profile()
+            {
                 let existing_picks = app.clone_file_picks.get(&cat);
 
                 // Collapse category files into pickable units (one row per
                 // skill dir, etc.) and remember which files each row covers.
                 let mut members: HashMap<String, Vec<String>> = HashMap::new();
-                for p in source.manifest.files.keys().filter(|p| categorize_file(p) == cat) {
+                for p in source
+                    .manifest
+                    .files
+                    .keys()
+                    .filter(|p| categorize_file(p) == cat)
+                {
                     members
                         .entry(crate::core::clone::picker_group_key(p))
                         .or_default()
@@ -659,7 +668,11 @@ fn execute_clone(app: &mut App) {
         only: Some(only),
         without: None,
         fresh_claude_md: app.clone_fresh_md,
-        file_picks: if file_picks.is_empty() { None } else { Some(file_picks) },
+        file_picks: if file_picks.is_empty() {
+            None
+        } else {
+            Some(file_picks)
+        },
     };
 
     match crate::core::clone::clone_profile(&app.paths, &opts) {

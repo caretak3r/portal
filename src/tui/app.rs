@@ -134,7 +134,11 @@ fn flatten_builders(map: BTreeMap<String, DirBuilder>) -> Vec<TreeNode> {
     let mut nodes = Vec::new();
     for (name, builder) in map {
         match builder {
-            DirBuilder::Leaf(size, runtime) => nodes.push(TreeNode::File { name, size, runtime }),
+            DirBuilder::Leaf(size, runtime) => nodes.push(TreeNode::File {
+                name,
+                size,
+                runtime,
+            }),
             DirBuilder::Dir(children) => {
                 let child_nodes = flatten_builders(children);
                 let total_size = sum_tree_size(&child_nodes);
@@ -227,7 +231,11 @@ pub fn visible_rows(nodes: &[TreeNode], expanded: &HashSet<String>, prefix: &str
                     rows.extend(visible_rows(children, expanded, &dir_path));
                 }
             }
-            TreeNode::File { name, size, runtime } => {
+            TreeNode::File {
+                name,
+                size,
+                runtime,
+            } => {
                 rows.push(TreeRow {
                     depth,
                     label: name.clone(),

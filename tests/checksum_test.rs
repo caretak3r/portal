@@ -51,7 +51,7 @@ fn test_verify_manifest_all_ok() {
             checksum: HELLO_HASH.into(),
             size: 11,
             source: FileSource::User,
-                mode: None,
+            mode: None,
         },
     )]);
 
@@ -68,7 +68,7 @@ fn test_verify_manifest_missing_file() {
             checksum: HELLO_HASH.into(),
             size: 11,
             source: FileSource::User,
-                mode: None,
+            mode: None,
         },
     )]);
 
@@ -89,7 +89,7 @@ fn test_verify_manifest_wrong_checksum() {
             checksum: HELLO_HASH.into(),
             size: 11,
             source: FileSource::User,
-                mode: None,
+            mode: None,
         },
     )]);
 

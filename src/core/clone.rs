@@ -228,9 +228,7 @@ pub fn clone_profile_with_progress(
             .file_picks
             .as_ref()
             .and_then(|p| p.get(&cat))
-            .is_some_and(|allowed| {
-                !allowed.is_empty() && !allowed.contains(rel_path.as_str())
-            })
+            .is_some_and(|allowed| !allowed.is_empty() && !allowed.contains(rel_path.as_str()))
         {
             skipped += 1;
             continue;

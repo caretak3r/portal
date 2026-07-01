@@ -187,9 +187,7 @@ pub fn save_with_progress(
         let size = bytes.len() as u64;
         let hash = cas::write(paths, &bytes)?;
         let source = classify_source(&rel_str, &bytes);
-        let mode = std::fs::metadata(&src)
-            .ok()
-            .map(|m| m.permissions().mode());
+        let mode = std::fs::metadata(&src).ok().map(|m| m.permissions().mode());
 
         entries.insert(
             rel_str,
