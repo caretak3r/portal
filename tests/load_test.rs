@@ -93,6 +93,49 @@ fn no_backup_flag_skips_archive_creation() {
     );
 }
 
+/// A load that can't be satisfied must FAIL loudly and leave `~/.claude`
+/// untouched — never report success on a profile it couldn't materialize.
+/// Regression guard for the "load silently no-ops" class of bug.
+#[test]
+fn load_failure_does_not_report_success() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let paths = portal::storage::paths::PortalPaths::with_home(tmp.path().to_path_buf());
+    paths.ensure_dirs().expect("ensure_dirs");
+
+    let claude = paths.claude_root();
+    portal::core::skeleton::create(&claude).expect("create skeleton");
+    std::fs::write(claude.join("CLAUDE.md"), "config A").expect("write CLAUDE.md");
+    portal::core::snapshot::save(&paths, "a", "A", &[]).expect("save a");
+
+    // Corrupt the profile: remove one CAS object it references.
+    let manifest =
+        portal::storage::manifest::read(&paths.profile_manifest("a")).expect("read manifest");
+    let victim = manifest.files.values().next().expect("at least one file");
+    std::fs::remove_file(paths.object_path(&victim.checksum)).expect("remove CAS object");
+
+    // Stamp the live tree so we can prove it survives the failed load.
+    std::fs::write(claude.join("CLAUDE.md"), "SENTINEL").expect("stamp");
+
+    let result = portal::core::loader::load(&paths, "a", true, true);
+    assert!(
+        result.is_err(),
+        "load must fail when a CAS object is missing"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(claude.join("CLAUDE.md")).expect("read CLAUDE.md"),
+        "SENTINEL",
+        "failed load must leave ~/.claude untouched"
+    );
+
+    // And nothing was recorded as active.
+    let state = portal::storage::state::read(&paths.state_file()).expect("read state");
+    assert!(
+        state.active_profile.is_none(),
+        "failed load must not record an active profile"
+    );
+}
+
 /// Verify that Unix exec bits set on a hook script survive a save → load cycle.
 /// Regression test for the "hooks broke, permissions changed" bug where CAS
 /// placement and std::fs::copy both silently dropped mode bits.

@@ -101,6 +101,22 @@ pub fn categorize_file(rel_path: &str) -> Category {
     }
 }
 
+/// Collapse a category file path to its pickable unit in the TUI file picker.
+///
+/// Directory-based categories (notably `skills/<name>/…`) collapse to their
+/// immediate child directory, so the picker lists one row per skill rather
+/// than every file inside it. Flat entries (`rules/foo.md`) are unchanged.
+#[must_use]
+pub fn picker_group_key(rel_path: &str) -> String {
+    let mut parts = rel_path.splitn(3, '/');
+    match (parts.next(), parts.next(), parts.next()) {
+        // Three or more segments → a nested directory; keep `<root>/<child>`.
+        (Some(root), Some(child), Some(_)) => format!("{root}/{child}"),
+        // One or two segments → already a leaf; show as-is.
+        _ => rel_path.to_string(),
+    }
+}
+
 /// Options for a clone operation.
 pub struct CloneOptions<'a> {
     pub source: &'a str,
@@ -287,6 +303,9 @@ pub fn clone_profile_with_progress(
             .unwrap_or_else(|_| "unknown".to_string()),
     };
     meta::write(&paths.profile_meta(opts.target), &profile_meta)?;
+
+    // Seed the new profile's git history branch (best-effort).
+    crate::core::git_history::record_snapshot_best_effort(paths, opts.target, &target_manifest);
 
     let category_names: Vec<String> = included
         .iter()

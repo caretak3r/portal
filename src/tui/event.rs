@@ -8,6 +8,11 @@ use super::app::{App, LoadInFlight, LoadOptions, NewProfileMode, View};
 use crate::core::clone::{Category, categorize_file};
 use crate::core::progress::{ChannelProgress, LoadEvent};
 
+/// Rows moved per `PageUp` / `PageDown` across all navigable lists.
+const PAGE_JUMP: usize = 10;
+/// Same jump as a signed delta for cursor-move helpers that take `isize`.
+const PAGE_JUMP_I: isize = 10;
+
 /// Poll for input and dispatch to the appropriate handler.
 ///
 /// Returns `Ok(true)` when the application should exit.
@@ -47,6 +52,7 @@ pub fn handle(app: &mut App) -> io::Result<bool> {
         View::ContentDiff => handle_content_diff(app, key.code),
         View::SaveDialog => handle_save_dialog(app, key.code),
         View::LoadConfirm => handle_load_confirm(app, key.code),
+        View::DeleteConfirm => handle_delete_confirm(app, key.code),
         View::CloneDialog => handle_clone_dialog(app, key.code),
         View::ThemePicker => handle_theme_picker(app, key.code),
         View::Help => handle_help(app, key.code),
@@ -147,6 +153,10 @@ fn handle_main(app: &mut App, code: KeyCode) {
             if on_dir {
                 app.toggle_expand();
             } else if app.selected_profile().is_some() {
+                // Enter is a real load, identical to `l`. Reset options so a
+                // stale dry-run flag from a prior Shift+L preview can't make
+                // the load silently no-op (no swap, no backup).
+                app.load_options = LoadOptions::default();
                 app.view = View::LoadConfirm;
             }
         }
@@ -154,11 +164,23 @@ fn handle_main(app: &mut App, code: KeyCode) {
             open_content_diff(app);
         }
         KeyCode::Enter if app.selected_profile().is_some() => {
+            app.load_options = LoadOptions::default();
             app.view = View::LoadConfirm;
         }
 
         KeyCode::Char('*') if app.view == View::Detail => {
             app.toggle_tree_all();
+        }
+        // `x` deletes the selected profile after a confirmation modal. The
+        // delete only drops the profile reference; backups are preserved.
+        KeyCode::Char('x') if app.view == View::Detail && app.selected_profile().is_some() => {
+            app.view = View::DeleteConfirm;
+        }
+        // `r` forces a live re-scan of the directory (no-op for non-active
+        // profiles, which are immutable snapshots).
+        KeyCode::Char('r') if app.view == View::Detail => {
+            app.rebuild_tree();
+            app.status_message = Some("Re-scanned directory.".to_string());
         }
         KeyCode::Char('l') if app.view == View::Detail && app.selected_profile().is_some() => {
             app.load_options = LoadOptions::default();
@@ -236,8 +258,19 @@ fn handle_main(app: &mut App, code: KeyCode) {
             app.view = View::Detail;
             app.status_message = None;
         }
-        KeyCode::PageDown => app.file_scroll = app.file_scroll.saturating_add(10),
-        KeyCode::PageUp => app.file_scroll = app.file_scroll.saturating_sub(10),
+        // Page jumps for the detail tree and the diff file list.
+        KeyCode::PageDown if app.view == View::Detail => {
+            app.move_detail_cursor(PAGE_JUMP_I);
+        }
+        KeyCode::PageUp if app.view == View::Detail => {
+            app.move_detail_cursor(-PAGE_JUMP_I);
+        }
+        KeyCode::PageDown if app.view == View::Diff && !app.diff_files.is_empty() => {
+            app.diff_cursor = (app.diff_cursor + PAGE_JUMP).min(app.diff_files.len() - 1);
+        }
+        KeyCode::PageUp if app.view == View::Diff => {
+            app.diff_cursor = app.diff_cursor.saturating_sub(PAGE_JUMP);
+        }
         _ => {}
     }
 }
@@ -276,6 +309,8 @@ fn handle_quick_switch(app: &mut App, code: KeyCode) {
         // not bound here.
         KeyCode::Down => app.quick_switch_move(1),
         KeyCode::Up => app.quick_switch_move(-1),
+        KeyCode::PageDown => app.quick_switch_move(PAGE_JUMP_I),
+        KeyCode::PageUp => app.quick_switch_move(-PAGE_JUMP_I),
         KeyCode::Backspace => {
             app.quick_query.pop();
             app.recompute_quick_matches();
@@ -327,6 +362,15 @@ fn handle_load_confirm(app: &mut App, code: KeyCode) {
     }
 }
 
+fn handle_delete_confirm(app: &mut App, code: KeyCode) {
+    match code {
+        // Default is "no" — deletion requires an explicit y / Enter.
+        KeyCode::Char('y') | KeyCode::Enter => app.delete_selected_profile(),
+        KeyCode::Esc | KeyCode::Char('n' | 'q') => app.view = View::Detail,
+        _ => {}
+    }
+}
+
 #[allow(clippy::missing_const_for_fn)] // KeyCode match is not const-compatible
 fn handle_help(app: &mut App, code: KeyCode) {
     match code {
@@ -338,14 +382,21 @@ fn handle_help(app: &mut App, code: KeyCode) {
 fn handle_file_picker(app: &mut App, code: KeyCode) {
     let len = app.file_picker_items.len();
     match code {
-        // Confirm and persist picks back to the clone dialog.
+        // Confirm and persist picks back to the clone dialog. Each checked row
+        // expands to the concrete files it covers so the clone (which matches
+        // exact paths) includes every file under a selected skill.
         KeyCode::Esc | KeyCode::Enter => {
-            let selected: HashSet<String> = app
-                .file_picker_items
-                .iter()
-                .filter(|(_, on)| *on)
-                .map(|(p, _)| p.clone())
-                .collect();
+            let mut selected: HashSet<String> = HashSet::new();
+            for (group, on) in &app.file_picker_items {
+                if *on {
+                    match app.file_picker_members.get(group) {
+                        Some(files) => selected.extend(files.iter().cloned()),
+                        None => {
+                            selected.insert(group.clone());
+                        }
+                    }
+                }
+            }
             app.clone_file_picks.insert(app.file_picker_category, selected);
             app.view = View::CloneDialog;
         }
@@ -359,6 +410,15 @@ fn handle_file_picker(app: &mut App, code: KeyCode) {
                 app.file_picker_cursor - 1
             };
         }
+        // Page jumps clamp at the ends (no wrap) for predictable fast scroll.
+        KeyCode::PageDown if len > 0 => {
+            app.file_picker_cursor = (app.file_picker_cursor + PAGE_JUMP).min(len - 1);
+        }
+        KeyCode::PageUp => {
+            app.file_picker_cursor = app.file_picker_cursor.saturating_sub(PAGE_JUMP);
+        }
+        KeyCode::Home if len > 0 => app.file_picker_cursor = 0,
+        KeyCode::End if len > 0 => app.file_picker_cursor = len - 1,
         // Space toggles the highlighted file.
         KeyCode::Char(' ') => {
             if let Some(item) = app.file_picker_items.get_mut(app.file_picker_cursor) {
@@ -435,6 +495,7 @@ fn open_content_diff(app: &mut App) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // dispatch table for the clone dialog's fields
 fn handle_clone_dialog(app: &mut App, code: KeyCode) {
     // Field layout:
     //   0 = name
@@ -512,15 +573,29 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
             let (cat, enabled) = app.clone_categories[cat_idx];
             if enabled && is_pickable(cat) && let Some(source) = app.selected_profile() {
                 let existing_picks = app.clone_file_picks.get(&cat);
-                let mut items: Vec<(String, bool)> = source
-                    .manifest
-                    .files
-                    .keys()
-                    .filter(|p| categorize_file(p) == cat)
-                    .map(|p| {
-                        let selected = existing_picks
-                            .is_none_or(|s| s.is_empty() || s.contains(p.as_str()));
-                        (p.clone(), selected)
+
+                // Collapse category files into pickable units (one row per
+                // skill dir, etc.) and remember which files each row covers.
+                let mut members: HashMap<String, Vec<String>> = HashMap::new();
+                for p in source.manifest.files.keys().filter(|p| categorize_file(p) == cat) {
+                    members
+                        .entry(crate::core::clone::picker_group_key(p))
+                        .or_default()
+                        .push(p.clone());
+                }
+                for files in members.values_mut() {
+                    files.sort();
+                }
+
+                // A row is pre-checked when there's no prior pick set, or every
+                // file it covers is already in that set.
+                let mut items: Vec<(String, bool)> = members
+                    .iter()
+                    .map(|(group, files)| {
+                        let selected = existing_picks.is_none_or(|s| {
+                            s.is_empty() || files.iter().all(|f| s.contains(f.as_str()))
+                        });
+                        (group.clone(), selected)
                     })
                     .collect();
                 items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -530,6 +605,7 @@ fn handle_clone_dialog(app: &mut App, code: KeyCode) {
                 } else {
                     app.file_picker_category = cat;
                     app.file_picker_items = items;
+                    app.file_picker_members = members;
                     app.file_picker_cursor = 0;
                     app.view = View::FilePicker;
                 }
@@ -593,6 +669,9 @@ fn execute_clone(app: &mut App) {
                 source_name, target, result.files_cloned
             ));
             let _ = app.refresh();
+            // Select the clone target so the cursor follows it for an
+            // immediate load, instead of staying on the source profile.
+            app.select_by_name(&target);
             app.rebuild_tree();
         }
         Err(e) => {
@@ -672,6 +751,9 @@ fn execute_new_empty(app: &mut App) {
 
     app.status_message = Some(format!("Created empty profile \"{name}\"."));
     let _ = app.refresh();
+    // Move the cursor onto the profile we just made so the obvious next step
+    // (`l` to load it) targets it — not whatever sits at the stale index.
+    app.select_by_name(&name);
     app.rebuild_tree();
     app.view = View::Detail;
 }
@@ -807,4 +889,153 @@ fn spawn_load(app: &mut App, target: String, opts: LoadOptions) {
     });
     app.view = View::LoadInProgress;
     app.status_message = None;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::core::profile::PortalState;
+    use crate::storage::{paths::PortalPaths, state};
+
+    /// Build an App rooted in a tempdir with one saved + active "default"
+    /// profile. The list cursor starts on index 0 = "default".
+    fn app_with_default() -> (tempfile::TempDir, App) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let paths = PortalPaths::with_home(tmp.path().to_path_buf());
+        paths.ensure_dirs().unwrap();
+
+        let claude = paths.claude_root();
+        crate::core::skeleton::create(&claude).unwrap();
+        std::fs::write(claude.join("CLAUDE.md"), "# default").unwrap();
+        crate::core::snapshot::save(&paths, "default", "", &[]).unwrap();
+        state::write(
+            &paths.state_file(),
+            &PortalState {
+                active_profile: Some("default".to_string()),
+                ..PortalState::default()
+            },
+        )
+        .unwrap();
+
+        let app = App::new(paths).unwrap();
+        (tmp, app)
+    }
+
+    /// Regression for "create empty profile + load does nothing, still on
+    /// default": a new profile whose name sorts AFTER the active one must end
+    /// up under the cursor, so the obvious next action (`l` to load) targets
+    /// it instead of the stale index that still pointed at "default".
+    #[test]
+    fn new_empty_selects_the_created_profile() {
+        let (_tmp, mut app) = app_with_default();
+        assert_eq!(app.selected_profile().unwrap().name, "default");
+
+        app.clone_name = "zzz".to_string(); // sorts after "default"
+        execute_new_empty(&mut app);
+
+        assert_eq!(
+            app.selected_profile().map(|p| p.name.as_str()),
+            Some("zzz"),
+            "cursor must follow the freshly created profile, not stay on the old index"
+        );
+    }
+
+    /// Same guarantee for clone: after cloning, the cursor moves to the new
+    /// clone, not the source it was copied from.
+    #[test]
+    fn clone_selects_the_target_profile() {
+        let (_tmp, mut app) = app_with_default();
+
+        app.clone_name = "zztarget".to_string(); // sorts after the source
+        app.clone_categories = crate::core::clone::Category::all()
+            .into_iter()
+            .map(|c| (c, true))
+            .collect();
+        execute_clone(&mut app);
+
+        assert_eq!(
+            app.selected_profile().map(|p| p.name.as_str()),
+            Some("zztarget"),
+            "after clone the cursor must move to the new clone, not the source"
+        );
+    }
+
+    /// Regression for "load does nothing and the previous profile isn't backed
+    /// up": `Shift+L` arms a dry-run preview by setting `load_options.dry_run`.
+    /// That flag must not leak into the next real load. Opening the confirm
+    /// modal via `Enter` (or `l`) has to reset to a real load — otherwise the
+    /// stale dry-run flag makes `execute_load` no-op (no swap, no backup),
+    /// which the user sees as the profile simply refusing to load.
+    #[test]
+    fn enter_clears_stale_dry_run_from_shift_l_preview() {
+        let (_tmp, mut app) = app_with_default();
+
+        // Shift+L arms a dry-run preview, then the user backs out.
+        handle_main(&mut app, KeyCode::Char('L'));
+        assert!(app.load_options.dry_run, "Shift+L should arm dry-run");
+        assert_eq!(app.view, View::LoadConfirm);
+        handle_load_confirm(&mut app, KeyCode::Esc);
+        assert_eq!(app.view, View::Detail);
+
+        // Now open the modal via Enter for a *real* load. Park the cursor past
+        // the tree so Enter opens the modal rather than toggling a folder row.
+        app.detail_cursor = usize::MAX;
+        handle_main(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.view, View::LoadConfirm);
+        assert!(
+            !app.load_options.dry_run,
+            "Enter-to-load must clear a stale dry-run flag, else the load silently no-ops"
+        );
+    }
+
+    /// End-to-end through the real TUI path: create a profile, select it,
+    /// `l` then `y` to load, then pump the worker to completion. The whole
+    /// point of the tool — the active profile must switch AND a backup of the
+    /// outgoing config must land in `backups_dir()`.
+    #[test]
+    fn tui_load_switches_active_and_writes_backup() {
+        let (_tmp, mut app) = app_with_default();
+
+        app.clone_name = "work".to_string();
+        execute_new_empty(&mut app);
+        assert_eq!(app.selected_profile().unwrap().name, "work");
+
+        handle_main(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.view, View::LoadConfirm);
+        handle_load_confirm(&mut app, KeyCode::Char('y'));
+
+        // Drive the async load to completion (worker thread + channel drain).
+        // `drain_load_events` is non-blocking (`try_recv`), so bound the wait by
+        // wall-clock and sleep between polls — a fixed spin count would race the
+        // worker thread and flake on machines fast enough to exhaust it before
+        // the real filesystem work (backup, swap, post-swap verify) completes.
+        let start = std::time::Instant::now();
+        while app.load_in_flight.is_some() {
+            app.drain_load_events();
+            if app.load_in_flight.is_some() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(30),
+                "load never completed"
+            );
+        }
+
+        let state = crate::storage::state::read(&app.paths.state_file()).unwrap();
+        assert_eq!(
+            state.active_profile.as_deref(),
+            Some("work"),
+            "active profile must switch to the loaded one"
+        );
+
+        let backups: Vec<_> = std::fs::read_dir(app.paths.backups_dir())
+            .map(|rd| rd.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+        assert!(
+            !backups.is_empty(),
+            "loading must back up the outgoing config"
+        );
+    }
 }

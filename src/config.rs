@@ -11,6 +11,8 @@ pub struct PortalConfig {
     pub plugins: PluginsConfig,
     #[serde(default)]
     pub ui: UiConfig,
+    #[serde(default)]
+    pub history: HistoryConfig,
     /// The `.claude` directory this portal instance manages.
     /// Confirmed on first run and persisted here; overrides `$HOME/.claude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +112,29 @@ impl Default for PluginsConfig {
     }
 }
 
+/// Per-profile git history configuration.
+///
+/// When enabled (the default), every save/clone records a commit on the
+/// profile's orphan branch in the history repo. Purely additive — git here
+/// never drives the live `~/.claude`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryConfig {
+    #[serde(default = "default_history_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_history_enabled(),
+        }
+    }
+}
+
+const fn default_history_enabled() -> bool {
+    true
+}
+
 const fn default_max_count() -> usize {
     10
 }
@@ -168,6 +193,7 @@ mod tests {
         assert_eq!(cfg.backup.compression_level, 3);
         assert_eq!(cfg.plugins.reinstall_timeout_secs, 30);
         assert!(!cfg.plugins.retry_failed_on_status);
+        assert!(cfg.history.enabled, "history is on by default");
     }
 
     #[test]
@@ -184,5 +210,14 @@ mod tests {
         assert_eq!(cfg.backup.max_count, 5);
         assert_eq!(cfg.backup.max_age_days, 90); // default
         assert_eq!(cfg.plugins.reinstall_timeout_secs, 30); // default
+        assert!(cfg.history.enabled); // default
+    }
+
+    #[test]
+    fn history_can_be_disabled_via_toml() {
+        let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        std::fs::write(tmp.path(), "[history]\nenabled = false\n").expect("write");
+        let cfg = load(tmp.path()).expect("load");
+        assert!(!cfg.history.enabled);
     }
 }

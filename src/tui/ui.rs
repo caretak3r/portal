@@ -29,6 +29,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::ContentDiff => render_content_diff(frame, app, right_pane),
         View::SaveDialog => render_save_dialog(frame, app, right_pane),
         View::LoadConfirm => render_load_confirm(frame, app, right_pane),
+        View::DeleteConfirm => {
+            render_detail(frame, app, right_pane);
+            render_delete_confirm(frame, app, right_pane);
+        }
         View::CloneDialog => render_clone_dialog(frame, app, right_pane),
         View::FilePicker => render_file_picker(frame, app, right_pane),
         View::ThemePicker => {
@@ -202,12 +206,19 @@ fn render_profile_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::
         .profiles
         .iter()
         .map(|p| {
-            let marker = if app.is_active(&p.name) {
-                Span::styled("● ", Style::default().fg(Color::Green).bold())
+            // The active (currently loaded) profile lights up green — both the
+            // bullet marker and the name — so it's unmistakable at a glance.
+            let (marker, name) = if app.is_active(&p.name) {
+                (
+                    Span::styled("● ", Style::default().fg(Color::Green).bold()),
+                    Span::styled(&p.name, Style::default().fg(Color::Green).bold()),
+                )
             } else {
-                Span::styled("○ ", Style::default().fg(Color::DarkGray))
+                (
+                    Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(&p.name),
+                )
             };
-            let name = Span::raw(&p.name);
             ListItem::new(Line::from(vec![marker, name]))
         })
         .collect();
@@ -319,10 +330,12 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     frame.render_widget(header, header_area);
 
     // ── File tree ──
-    let tree_title = if app.tree_show_all {
-        " Files (all) * "
-    } else {
-        " Files (profile) * "
+    // The active profile shows a live ~/.claude listing; others show their
+    // immutable CAS snapshot (no `*` toggle — there's no live dir to reveal).
+    let tree_title = match (app.is_active(&profile.name), app.tree_show_all) {
+        (true, false) => " Files (live) * ",
+        (true, true) => " Files (live · all) * ",
+        (false, _) => " Files (snapshot) ",
     };
     let tree_block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT)
@@ -433,7 +446,9 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::styled("l", hint),
             Span::raw(" load  "),
             Span::styled("*", hint),
-            Span::raw(" all files"),
+            Span::raw(" all files  "),
+            Span::styled("r", hint),
+            Span::raw(" rescan"),
         ]),
         Line::from(vec![
             Span::styled(" Tab", hint),
@@ -446,6 +461,8 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             Span::raw(" new  "),
             Span::styled("c", hint),
             Span::raw(" clone  "),
+            Span::styled("x", hint),
+            Span::raw(" delete  "),
             Span::styled("?", hint),
             Span::raw(" help"),
         ]),
@@ -884,6 +901,59 @@ fn render_load_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
     frame.render_widget(paragraph, area);
 }
 
+fn render_delete_confirm(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
+    let Some(profile) = app.selected_profile() else {
+        return;
+    };
+    let name = profile.name.clone();
+    let is_active = app.is_active(&name);
+
+    let width = 52u16.min(area.width.saturating_sub(2));
+    let height = 9u16.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup = ratatui::layout::Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let warn = Style::default().fg(Color::Red).bold();
+
+    let mut lines: Vec<Line<'_>> = vec![
+        Line::from(vec![
+            Span::raw("Delete profile "),
+            Span::styled(format!("\"{name}\""), Style::default().bold()),
+            Span::raw("?"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Removes the profile reference only.",
+            dim,
+        )]),
+        Line::from(vec![Span::styled(
+            "Compressed backups are kept.",
+            Style::default().fg(Color::Green),
+        )]),
+    ];
+    if is_active {
+        lines.push(Line::from(vec![Span::styled(
+            "This profile is currently active.",
+            warn,
+        )]));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "y/Enter delete   Esc/n cancel",
+        Style::default().fg(Color::Yellow),
+    ));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(" Delete Profile ", warn));
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup);
+}
+
 /// Render a single `[x] label` / `[ ] label` flag chip with the keybind
 /// letter highlighted. Used by the `LoadConfirm` options row.
 fn flag_chip(key: &str, label: &str, on: bool) -> Span<'static> {
@@ -1277,10 +1347,20 @@ fn render_file_picker(frame: &mut Frame, app: &App, area: Rect) {
         let msg = Paragraph::new("No files in this category.");
         frame.render_widget(msg, list_area);
     } else {
+        // Scroll the window so the cursor row is always visible — the list can
+        // be far taller than the pane (hundreds of skills).
+        let visible_height = list_area.height as usize;
+        let scroll_offset = if visible_height > 0 && app.file_picker_cursor >= visible_height {
+            app.file_picker_cursor - visible_height + 1
+        } else {
+            0
+        };
         let items: Vec<ListItem<'_>> = app
             .file_picker_items
             .iter()
             .enumerate()
+            .skip(scroll_offset)
+            .take(visible_height)
             .map(|(i, (path, on))| {
                 let check = if *on { "[x]" } else { "[ ]" };
                 let style = if i == app.file_picker_cursor {
@@ -1301,6 +1381,8 @@ fn render_file_picker(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw(" toggle  "),
         Span::styled("a", Style::default().fg(Color::Cyan)),
         Span::raw(" all/none  "),
+        Span::styled("PgUp/PgDn", Style::default().fg(Color::Cyan)),
+        Span::raw(" jump  "),
         Span::styled("Enter/Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" confirm"),
     ]))

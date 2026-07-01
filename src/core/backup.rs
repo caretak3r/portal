@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -56,8 +56,50 @@ pub fn create(paths: &PortalPaths, op_type: &str, _profile_name: &str) -> Result
     let encoder = tar.into_inner()?;
     encoder.finish()?;
 
+    // A backup is worthless if it's empty or unreadable. Validate before
+    // returning the path — otherwise a silent encode failure leaves a 0-byte
+    // archive that `portal undo` would later try (and fail) to restore from.
+    if let Err(e) = verify_archive(&backup_path) {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(e).context("backup verification failed");
+    }
+
     info!("backup created: {filename}");
     Ok(backup_path)
+}
+
+/// Verify a freshly-written archive is non-empty and contains the `claude/`
+/// root entry. Cheap: reads only the first tar header, not the whole archive.
+///
+/// # Errors
+///
+/// Returns an error if the file is empty, cannot be decoded, or does not start
+/// with a `claude/` entry.
+pub fn verify_archive(path: &Path) -> Result<()> {
+    let len = std::fs::metadata(path)
+        .with_context(|| format!("stat backup: {}", path.display()))?
+        .len();
+    if len == 0 {
+        bail!("backup archive is empty: {}", path.display());
+    }
+
+    let file = File::open(path).with_context(|| format!("opening backup: {}", path.display()))?;
+    let decoder = zstd::Decoder::new(file).context("decoding backup")?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = archive.entries().context("reading backup entries")?;
+    match entries.next() {
+        Some(Ok(entry)) => {
+            let entry_path = entry.path().context("reading backup entry path")?;
+            if !entry_path.starts_with("claude") {
+                bail!(
+                    "backup archive does not start with a claude/ entry: {}",
+                    path.display()
+                );
+            }
+            Ok(())
+        }
+        _ => bail!("backup archive has no entries: {}", path.display()),
+    }
 }
 
 /// Restore from a zstd-compressed tar backup, replacing `~/.claude/`.
@@ -174,4 +216,47 @@ pub fn list(paths: &PortalPaths) -> Result<Vec<BackupInfo>> {
 
     infos.sort_by_key(|info| std::cmp::Reverse(info.created));
     Ok(infos)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_archive_rejects_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.tar.zst");
+        std::fs::write(&path, b"").unwrap();
+        assert!(verify_archive(&path).is_err(), "0-byte archive must fail");
+    }
+
+    #[test]
+    fn verify_archive_rejects_non_archive_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("garbage.tar.zst");
+        std::fs::write(&path, b"not a zstd stream").unwrap();
+        assert!(
+            verify_archive(&path).is_err(),
+            "garbage must fail to decode"
+        );
+    }
+
+    #[test]
+    fn verify_archive_accepts_a_real_claude_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Build a minimal claude/ tree and archive it the same way create() does.
+        let claude = tmp.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("CLAUDE.md"), b"hi").unwrap();
+
+        let path = tmp.path().join("good.tar.zst");
+        let file = File::create(&path).unwrap();
+        let encoder = zstd::Encoder::new(file, 3).unwrap();
+        let mut tar = tar::Builder::new(encoder);
+        tar.append_dir_all("claude", &claude).unwrap();
+        tar.into_inner().unwrap().finish().unwrap();
+
+        verify_archive(&path).expect("a real claude archive must verify");
+    }
 }

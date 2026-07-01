@@ -23,6 +23,9 @@ pub enum View {
     ContentDiff,
     SaveDialog,
     LoadConfirm,
+    /// Confirmation modal before deleting the selected profile. Deleting only
+    /// removes the profile reference — the compressed backups are kept.
+    DeleteConfirm,
     CloneDialog,
     /// Theme picker overlay (`T`).
     ThemePicker,
@@ -250,6 +253,41 @@ fn fmt_size(bytes: u64) -> String {
     }
 }
 
+/// Walk a live directory into a `path -> (size, runtime)` map for the file tree.
+///
+/// The map reflects what is *on disk* — files deleted since the last save are
+/// absent, freshly added files appear. `runtime` marks rows rendered dimmed:
+/// files present on disk but not tracked by the manifest (newly added, or
+/// excluded runtime infrastructure). Excluded paths (`.git`, `plugins/cache`,
+/// `projects`, …) are omitted unless `show_all` is set, mirroring the
+/// exclusion rules the snapshot itself uses so the default view stays clean.
+fn scan_live_map(
+    dir: &std::path::Path,
+    manifest: &ProfileManifest,
+    show_all: bool,
+) -> BTreeMap<String, (u64, bool)> {
+    let mut map = BTreeMap::new();
+    for entry in WalkDir::new(dir).min_depth(1) {
+        let Ok(e) = entry else { continue };
+        if !e.file_type().is_file() {
+            continue;
+        }
+        let Ok(rel) = e.path().strip_prefix(dir) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy().to_string();
+        let excluded = crate::core::snapshot::is_excluded(&rel_str);
+        if excluded && !show_all {
+            continue;
+        }
+        let size = e.metadata().map_or(0, |m| m.len());
+        // Dim anything the manifest doesn't track: untracked-new or excluded infra.
+        let runtime = excluded || !manifest.files.contains_key(&rel_str);
+        map.insert(rel_str, (size, runtime));
+    }
+    map
+}
+
 // ── App state ──────────────────────────────────────────────────────────
 
 /// Root application state for the TUI.
@@ -328,14 +366,19 @@ pub struct App {
     pub quick_cursor: usize,
 
     // ── FilePicker overlay (→ from CloneDialog category rows) ──
-    /// Which category is being picked in the FilePicker view.
+    /// Which category is being picked in the `FilePicker` view.
     pub file_picker_category: Category,
-    /// Items in the file picker: (relative_path, selected).
+    /// Items in the file picker as `(label, checked)`. For directory-based
+    /// categories the label is a collapsed unit (e.g. `skills/<name>`) rather
+    /// than an individual file — see [`file_picker_members`](Self::file_picker_members).
     pub file_picker_items: Vec<(String, bool)>,
+    /// Maps each picker row label to the concrete relative paths it covers, so
+    /// toggling one `skills/<name>` row selects every file under that skill.
+    pub file_picker_members: HashMap<String, Vec<String>>,
     /// Cursor row in the file picker list.
     pub file_picker_cursor: usize,
     /// Accumulated per-category file selections for the pending clone.
-    /// Cleared when the CloneDialog is first opened.
+    /// Cleared when the `CloneDialog` is first opened.
     pub clone_file_picks: HashMap<Category, HashSet<String>>,
 }
 
@@ -430,6 +473,7 @@ impl App {
             quick_cursor: 0,
             file_picker_category: Category::Skills,
             file_picker_items: Vec::new(),
+            file_picker_members: HashMap::new(),
             file_picker_cursor: 0,
             clone_file_picks: HashMap::new(),
         };
@@ -616,23 +660,80 @@ impl App {
             .and_then(|i| self.profiles.get(i))
     }
 
+    /// Move the list cursor to the profile with the given name, if present.
+    ///
+    /// `refresh()` rebuilds `profiles` in alphabetical order, so a `list_state`
+    /// index captured before the refresh no longer points at the same profile.
+    /// Call this after create/clone so the freshly made profile — not whatever
+    /// happens to land at the old index — becomes the cursor (and thus the
+    /// load target).
+    pub fn select_by_name(&mut self, name: &str) {
+        if let Some(idx) = self.profiles.iter().position(|p| p.name == name) {
+            self.list_state.select(Some(idx));
+        }
+    }
+
     /// Whether the named profile is the currently active one.
     pub fn is_active(&self, name: &str) -> bool {
         self.active_profile.as_deref().is_some_and(|a| a == name)
     }
 
-    /// Rebuild the file tree for the currently selected profile (if it changed).
+    /// Delete the currently selected profile's reference. Backups are kept.
+    ///
+    /// Refreshes the profile list, clamps the selection, and rebuilds the
+    /// file tree. Sets a status message describing the outcome.
+    pub fn delete_selected_profile(&mut self) {
+        let Some(name) = self.selected_profile().map(|p| p.name.clone()) else {
+            self.view = View::Detail;
+            return;
+        };
+
+        match crate::core::remove::delete_profile(&self.paths, &name) {
+            Ok(_) => {
+                self.status_message = Some(format!("Deleted \"{name}\" (backups kept)."));
+                let _ = self.refresh();
+                // The list shrank — keep the cursor on a valid row.
+                if self.profiles.is_empty() {
+                    self.list_state.select(None);
+                } else {
+                    let idx = self
+                        .list_state
+                        .selected()
+                        .unwrap_or(0)
+                        .min(self.profiles.len() - 1);
+                    self.list_state.select(Some(idx));
+                }
+                // Force a rebuild even if the new selection happens to share a
+                // name slot — the deleted profile must not linger in the tree.
+                self.tree_profile = None;
+                self.rebuild_tree();
+            }
+            Err(e) => {
+                self.status_message = Some(format!("Delete failed: {e}"));
+            }
+        }
+        self.view = View::Detail;
+    }
+
+    /// Rebuild the file tree for the currently selected profile.
+    ///
+    /// This is a **live** listing, not the saved manifest snapshot. When the
+    /// selected profile is the active one, we walk `~/.claude` on disk every
+    /// call, so any drift since the last save (added, deleted, or resized
+    /// files) is reflected immediately. Non-active profiles have no live
+    /// backing directory — their content is content-addressed in the CAS pool
+    /// — so they fall back to the immutable manifest.
     pub fn rebuild_tree(&mut self) {
         let current_name = self.selected_profile().map(|p| p.name.clone());
-        if current_name == self.tree_profile {
-            // Just refresh visible rows (expand/collapse may have changed).
-            self.tree_rows = visible_rows(&self.file_tree, &self.expanded_dirs, "");
-            return;
-        }
+        let profile_changed = current_name != self.tree_profile;
 
-        self.tree_profile = current_name;
-        self.expanded_dirs.clear();
-        self.detail_cursor = 0;
+        // Switching profiles resets navigation. A live re-scan of the *same*
+        // profile must preserve the user's expand/collapse state and cursor.
+        if profile_changed {
+            self.tree_profile = current_name;
+            self.expanded_dirs.clear();
+            self.detail_cursor = 0;
+        }
 
         let Some(profile) = self.selected_profile() else {
             self.file_tree.clear();
@@ -640,38 +741,31 @@ impl App {
             return;
         };
 
-        // Start with manifest files (runtime=false).
-        let mut file_map: BTreeMap<String, (u64, bool)> = profile
-            .manifest
-            .files
-            .iter()
-            .map(|(k, v)| (k.clone(), (v.size, false)))
-            .collect();
+        let is_active_sel = self
+            .active_profile
+            .as_deref()
+            .is_some_and(|a| a == profile.name);
+        let claude_dir = self.paths.claude_root();
 
-        // In show-all mode, overlay live ~/.claude files not in the manifest.
-        if self.tree_show_all {
-            let claude_dir = self.paths.claude_root();
-            if claude_dir.is_dir() {
-                for entry in WalkDir::new(&claude_dir).min_depth(1) {
-                    let Ok(e) = entry else { continue };
-                    if !e.file_type().is_file() {
-                        continue;
-                    }
-                    let Ok(rel) = e.path().strip_prefix(&claude_dir) else {
-                        continue;
-                    };
-                    let rel_str = rel.to_string_lossy().to_string();
-                    // Insert only if not already tracked by the manifest.
-                    if !file_map.contains_key(&rel_str) {
-                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                        file_map.insert(rel_str, (size, true));
-                    }
-                }
-            }
-        }
+        let file_map = if is_active_sel && claude_dir.is_dir() {
+            // LIVE: list what's actually in ~/.claude right now.
+            scan_live_map(&claude_dir, &profile.manifest, self.tree_show_all)
+        } else {
+            // Immutable CAS snapshot — the manifest is the source of truth.
+            profile
+                .manifest
+                .files
+                .iter()
+                .map(|(k, v)| (k.clone(), (v.size, false)))
+                .collect()
+        };
 
         self.file_tree = build_file_tree(&file_map);
         self.tree_rows = visible_rows(&self.file_tree, &self.expanded_dirs, "");
+        // A live directory can shrink between scans — keep the cursor in range.
+        if self.detail_cursor >= self.tree_rows.len() {
+            self.detail_cursor = self.tree_rows.len().saturating_sub(1);
+        }
     }
 
     /// Toggle the "show all files" mode and force a full tree rebuild.
@@ -730,4 +824,75 @@ fn save_theme_to_config(paths: &PortalPaths, theme: Theme) -> anyhow::Result<()>
     let serialized = toml::to_string_pretty(&cfg)?;
     std::fs::write(&path, serialized)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::core::profile::{FileEntry, FileSource};
+
+    fn manifest_with(tracked: &[&str]) -> ProfileManifest {
+        let files = tracked
+            .iter()
+            .map(|p| {
+                (
+                    (*p).to_string(),
+                    FileEntry {
+                        checksum: "sha256:x".to_string(),
+                        size: 1,
+                        source: FileSource::User,
+                        mode: None,
+                    },
+                )
+            })
+            .collect();
+        ProfileManifest {
+            version: 1,
+            name: "t".to_string(),
+            created_at: chrono::Utc::now(),
+            last_loaded: None,
+            load_count: 0,
+            description: String::new(),
+            tags: Vec::new(),
+            files,
+            excluded_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn live_map_marks_untracked_and_drops_deleted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("CLAUDE.md"), "x").unwrap(); // tracked
+        std::fs::write(dir.join("new.md"), "y").unwrap(); // on disk, untracked
+        // "gone.md" is tracked in the manifest but absent on disk.
+        let mf = manifest_with(&["CLAUDE.md", "gone.md"]);
+
+        let map = scan_live_map(dir, &mf, false);
+
+        assert_eq!(map.get("CLAUDE.md").map(|v| v.1), Some(false));
+        assert_eq!(map.get("new.md").map(|v| v.1), Some(true));
+        assert!(
+            !map.contains_key("gone.md"),
+            "a file deleted on disk must not appear — this is live, not a snapshot"
+        );
+    }
+
+    #[test]
+    fn live_map_hides_excluded_unless_show_all() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("projects")).unwrap();
+        std::fs::write(dir.join("projects/log.json"), "{}").unwrap(); // excluded infra
+        std::fs::write(dir.join("CLAUDE.md"), "x").unwrap();
+        let mf = manifest_with(&["CLAUDE.md"]);
+
+        let hidden = scan_live_map(dir, &mf, false);
+        assert!(!hidden.contains_key("projects/log.json"));
+        assert!(hidden.contains_key("CLAUDE.md"));
+
+        let shown = scan_live_map(dir, &mf, true);
+        assert_eq!(shown.get("projects/log.json").map(|v| v.1), Some(true));
+    }
 }

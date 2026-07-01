@@ -1,10 +1,10 @@
 use crate::core::profile::ProfileManifest;
 use crate::core::progress::ProgressReporter;
 use crate::core::{backup, checksum, plugins, safety, skeleton, snapshot};
-use std::os::unix::fs::PermissionsExt;
 use crate::storage::{cas, manifest, paths::PortalPaths, plugins_manifest, state};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tracing::info;
 use walkdir::WalkDir;
@@ -217,6 +217,16 @@ pub fn load_with_progress(
         return Err(e).context("atomic swap failed — restored original");
     }
 
+    // Verify the swap actually produced the requested profile before we throw
+    // away the rollback copy. Guards against a structurally-successful rename
+    // that nonetheless left the wrong tree in place — the load must never
+    // report success on a `~/.claude` that doesn't match the manifest.
+    if let Err(e) = assert_swap_applied(&claude_dir, &manifest) {
+        let _ = std::fs::remove_dir_all(&claude_dir);
+        let _ = std::fs::rename(&old_dir, &claude_dir);
+        return Err(e).context("post-swap verification failed — restored original");
+    }
+
     // Swap succeeded — clean up old dir.
     if old_dir.exists() {
         let _ = std::fs::remove_dir_all(&old_dir);
@@ -258,6 +268,14 @@ pub fn load_with_progress(
     });
     state::write(&state_path, &portal_state)?;
 
+    // Confirm the state write actually persisted the new active profile — a
+    // serialization no-op here would otherwise leave us reporting success on
+    // the old profile.
+    let written = state::read(&state_path)?;
+    if written.active_profile.as_deref() != Some(profile_name) {
+        bail!("state write did not record \"{profile_name}\" as active");
+    }
+
     // 10. Update manifest load count.
     manifest.load_count += 1;
     manifest.last_loaded = Some(Utc::now());
@@ -269,6 +287,45 @@ pub fn load_with_progress(
         backup_path,
         plugin_results,
     })
+}
+
+/// Verify the post-swap `~/.claude` actually matches the loaded manifest.
+///
+/// Every tracked file must exist with the manifest's recorded size (a cheap
+/// stat each); a small capped sample is additionally re-hashed to catch
+/// corruption the size check would miss. This is the last line of defense
+/// against a load that "succeeds" structurally but leaves the wrong tree.
+fn assert_swap_applied(claude_dir: &Path, manifest: &ProfileManifest) -> Result<()> {
+    /// Cap on full content re-hashes — keeps verification ~O(1) on big profiles.
+    const MAX_HASHED: usize = 8;
+
+    if !claude_dir.is_dir() {
+        bail!("post-swap: {} is missing", claude_dir.display());
+    }
+
+    let mut hashed = 0usize;
+
+    for (rel, entry) in &manifest.files {
+        let path = claude_dir.join(rel);
+        let meta = std::fs::metadata(&path)
+            .with_context(|| format!("post-swap: tracked file missing: {rel}"))?;
+        if meta.len() != entry.size {
+            bail!(
+                "post-swap: size mismatch for {rel} (expected {}, got {})",
+                entry.size,
+                meta.len()
+            );
+        }
+        if hashed < MAX_HASHED {
+            let actual = checksum::sha256_file(&path)
+                .with_context(|| format!("post-swap: hashing {rel}"))?;
+            if actual != entry.checksum {
+                bail!("post-swap: checksum mismatch for {rel}");
+            }
+            hashed += 1;
+        }
+    }
+    Ok(())
 }
 
 /// True when every file referenced by the manifest has its object in CAS.
@@ -407,8 +464,23 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             .strip_prefix(src)
             .with_context(|| "stripping prefix during copy")?;
         let target = dst.join(rel);
+        let file_type = entry.file_type();
 
-        if entry.file_type().is_dir() {
+        if file_type.is_symlink() {
+            // Recreate symlinks verbatim. `std::fs::copy` follows the link and
+            // dies with ENOENT on a dangling target (e.g. the rotated-away
+            // `~/.claude/debug/latest`), which would abort the whole load
+            // before the swap. Mirror backup.rs, which stores links as-is.
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating parent: {}", parent.display()))?;
+            }
+            let link_target = std::fs::read_link(entry.path())
+                .with_context(|| format!("reading symlink: {}", entry.path().display()))?;
+            let _ = std::fs::remove_file(&target);
+            std::os::unix::fs::symlink(&link_target, &target)
+                .with_context(|| format!("recreating symlink: {}", target.display()))?;
+        } else if file_type.is_dir() {
             std::fs::create_dir_all(&target)
                 .with_context(|| format!("creating dir: {}", target.display()))?;
         } else {
@@ -461,4 +533,95 @@ fn preserve_runtime_data(src: &Path, dst: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// A dangling symlink inside a preserved runtime dir (the real-world case:
+    /// `~/.claude/debug/latest` pointing at a rotated-away log) must not abort
+    /// the copy. `std::fs::copy` follows the link and dies with ENOENT, which
+    /// previously killed the whole profile load before the swap.
+    #[test]
+    fn copy_dir_recursive_tolerates_broken_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("real.txt"), b"hi").unwrap();
+        // Dangling symlink — target does not exist.
+        std::os::unix::fs::symlink("does-not-exist", src.join("latest")).unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("copy must tolerate broken symlinks");
+
+        assert_eq!(std::fs::read(dst.join("real.txt")).unwrap(), b"hi");
+        let meta = std::fs::symlink_metadata(dst.join("latest")).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "broken symlink must be recreated verbatim, not dereferenced"
+        );
+    }
+
+    /// Build a one-file manifest pointing at `rel` with the given bytes.
+    fn manifest_for(rel: &str, bytes: &[u8]) -> ProfileManifest {
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            rel.to_string(),
+            crate::core::profile::FileEntry {
+                checksum: checksum::sha256_bytes(bytes),
+                size: bytes.len() as u64,
+                source: crate::core::profile::FileSource::User,
+                mode: None,
+            },
+        );
+        ProfileManifest {
+            version: 1,
+            name: "t".into(),
+            created_at: Utc::now(),
+            last_loaded: None,
+            load_count: 0,
+            description: String::new(),
+            tags: Vec::new(),
+            files,
+            excluded_patterns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn assert_swap_applied_passes_on_matching_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        std::fs::write(claude.join("CLAUDE.md"), b"hello").unwrap();
+        let m = manifest_for("CLAUDE.md", b"hello");
+        assert_swap_applied(&claude, &m).expect("matching tree verifies");
+    }
+
+    #[test]
+    fn assert_swap_applied_fails_on_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let m = manifest_for("CLAUDE.md", b"hello");
+        assert!(
+            assert_swap_applied(&claude, &m).is_err(),
+            "missing tracked file must fail verification"
+        );
+    }
+
+    #[test]
+    fn assert_swap_applied_fails_on_content_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let claude = tmp.path().join("claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        // Same size, different content → size check passes, hash catches it.
+        std::fs::write(claude.join("CLAUDE.md"), b"world").unwrap();
+        let m = manifest_for("CLAUDE.md", b"hello");
+        assert!(
+            assert_swap_applied(&claude, &m).is_err(),
+            "content mismatch must fail verification"
+        );
+    }
 }

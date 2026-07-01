@@ -19,13 +19,19 @@ impl PortalPaths {
     #[allow(clippy::expect_used)]
     pub fn detect() -> Self {
         let home = dirs::home_dir().expect("cannot detect home directory");
-        Self { home, claude_override: None }
+        Self {
+            home,
+            claude_override: None,
+        }
     }
 
     /// Create paths rooted at a specific home directory (useful for testing).
     #[must_use]
-    pub fn with_home(home: PathBuf) -> Self {
-        Self { home, claude_override: None }
+    pub const fn with_home(home: PathBuf) -> Self {
+        Self {
+            home,
+            claude_override: None,
+        }
     }
 
     /// Override which `.claude` directory this instance manages.
@@ -35,9 +41,31 @@ impl PortalPaths {
         self
     }
 
+    /// The home directory this instance is rooted at.
+    #[must_use]
+    pub fn home(&self) -> &std::path::Path {
+        &self.home
+    }
+
     #[must_use]
     pub fn portal_root(&self) -> PathBuf {
         self.home.join(".config/portal")
+    }
+
+    /// Legacy pre-XDG storage root (`~/.portal`). Older portal versions kept
+    /// profiles here; the current binary never reads it. `portal doctor`
+    /// detects leftovers so they can be migrated or removed.
+    #[must_use]
+    pub fn legacy_root(&self) -> PathBuf {
+        self.home.join(".portal")
+    }
+
+    /// Git working tree used as a per-profile history store (Phase 3). One
+    /// repo, one orphan branch per profile. Distinct from `~/.claude` — git
+    /// here records history and never drives the live config.
+    #[must_use]
+    pub fn history_dir(&self) -> PathBuf {
+        self.portal_root().join("history")
     }
 
     #[must_use]

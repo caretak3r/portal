@@ -200,3 +200,64 @@ fn test_parse_categories_invalid() {
     let result = clone::parse_categories("skills,bogus");
     assert!(result.is_err());
 }
+
+#[test]
+fn picker_group_key_collapses_nested_dirs() {
+    use clone::picker_group_key;
+    // Nested skill files collapse to the skill directory.
+    assert_eq!(picker_group_key("skills/foo/SKILL.md"), "skills/foo");
+    assert_eq!(picker_group_key("skills/foo/references/bar.md"), "skills/foo");
+    assert_eq!(picker_group_key("agents/team/lead.md"), "agents/team");
+    // Flat entries are unchanged.
+    assert_eq!(picker_group_key("rules/security.md"), "rules/security.md");
+    assert_eq!(picker_group_key("commands/deploy.md"), "commands/deploy.md");
+    assert_eq!(picker_group_key("CLAUDE.md"), "CLAUDE.md");
+}
+
+#[test]
+fn clone_includes_all_files_under_a_picked_skill() {
+    use std::collections::{HashMap, HashSet};
+
+    let tmp = TempDir::new().unwrap();
+    let paths = PortalPaths::with_home(tmp.path().to_path_buf());
+    paths.ensure_dirs().unwrap();
+
+    let claude = paths.claude_root();
+    portal::core::skeleton::create(&claude).unwrap();
+    std::fs::create_dir_all(claude.join("skills/multi/references")).unwrap();
+    std::fs::write(claude.join("skills/multi/SKILL.md"), "# multi").unwrap();
+    std::fs::write(claude.join("skills/multi/references/extra.md"), "# extra").unwrap();
+    std::fs::create_dir_all(claude.join("skills/solo")).unwrap();
+    std::fs::write(claude.join("skills/solo/SKILL.md"), "# solo").unwrap();
+    portal::core::snapshot::save(&paths, "src", "", &[]).unwrap();
+
+    // Simulate the picker selecting only the "skills/multi" row, which the TUI
+    // expands to every file that skill covers.
+    let mut picks: HashMap<Category, HashSet<String>> = HashMap::new();
+    picks.insert(
+        Category::Skills,
+        HashSet::from([
+            "skills/multi/SKILL.md".to_string(),
+            "skills/multi/references/extra.md".to_string(),
+        ]),
+    );
+
+    let opts = CloneOptions {
+        source: "src",
+        target: "dst",
+        description: "",
+        only: Some(vec![Category::Skills]),
+        without: None,
+        fresh_claude_md: false,
+        file_picks: Some(picks),
+    };
+    clone::clone_profile(&paths, &opts).unwrap();
+
+    let mf = manifest::read(&paths.profile_manifest("dst")).unwrap();
+    assert!(mf.files.contains_key("skills/multi/SKILL.md"));
+    assert!(mf.files.contains_key("skills/multi/references/extra.md"));
+    assert!(
+        !mf.files.contains_key("skills/solo/SKILL.md"),
+        "a deselected skill's files must be excluded"
+    );
+}

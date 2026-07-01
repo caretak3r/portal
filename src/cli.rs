@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use portal::config;
 use portal::core::progress::ProgressReporter;
 use portal::core::{
-    backup, checksum, clone, diff, loader, plugins, safety, skeleton, snapshot, transport,
+    backup, checksum, clone, diff, doctor, git_history, loader, plugins, remove, safety, skeleton,
+    snapshot, transport,
 };
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
@@ -140,6 +141,17 @@ enum Commands {
     },
     /// Recover from a crashed swap (.claude.portal-old)
     Recover,
+    /// Diagnose portal health; show what's managed and offer guided repairs
+    Doctor {
+        /// Apply guided fixes (prompts before each, unless --force)
+        #[arg(long)]
+        fix: bool,
+    },
+    /// Show a profile's git history (commits on its history branch)
+    History {
+        /// Profile name (defaults to the active profile)
+        name: Option<String>,
+    },
 }
 
 /// Search for an existing `.claude` directory: CWD first (interactive only), then `home_default`.
@@ -268,6 +280,8 @@ pub fn run() -> Result<()> {
             *fresh_claude_md,
         ),
         Some(Commands::Recover) => cmd_recover(&cli, &paths),
+        Some(Commands::Doctor { fix }) => cmd_doctor(&cli, &paths, *fix),
+        Some(Commands::History { name }) => cmd_history(&cli, &paths, name.as_deref()),
     }
 }
 
@@ -327,6 +341,11 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
         println!(
             "  {}    Recover from crashed swap",
             style("recover").green()
+        );
+        println!("  {}     Diagnose health & repair", style("doctor").green());
+        println!(
+            "  {}    Show a profile's git history",
+            style("history").green()
         );
         println!();
         println!(
@@ -810,25 +829,15 @@ fn cmd_rm(cli: &Cli, paths: &PortalPaths, name: &str) -> Result<()> {
         return Ok(());
     }
 
-    std::fs::remove_dir_all(&profile_dir)?;
-
-    // If this was the active or previous profile, clear those pointers so
-    // `portal toggle` doesn't try to load a profile we just deleted.
-    let state_path = paths.state_file();
-    let mut portal_state = state::read(&state_path)?;
-    let cleared_active = portal_state.active_profile.as_deref() == Some(name);
-    let cleared_previous = portal_state.previous_profile.as_deref() == Some(name);
-    if cleared_active {
-        portal_state.active_profile = None;
-    }
-    if cleared_previous {
-        portal_state.previous_profile = None;
-    }
-    if cleared_active || cleared_previous {
-        state::write(&state_path, &portal_state)?;
-    }
+    // Shared with the TUI: removes the profile reference and clears state
+    // pointers, but never touches the compressed backups under `backups/`.
+    remove::delete_profile(paths, name)?;
 
     println!("{} Deleted profile \"{name}\"", style("✓").green().bold());
+    println!(
+        "{}",
+        style("  backups under ~/.config/portal/backups are kept").dim()
+    );
 
     Ok(())
 }
@@ -1422,6 +1431,184 @@ fn cmd_recover(cli: &Cli, paths: &PortalPaths) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+// ── doctor ───────────────────────────────────────────────────────────
+
+fn cmd_doctor(cli: &Cli, paths: &PortalPaths, fix: bool) -> Result<()> {
+    let report = doctor::diagnose(paths)?;
+
+    println!("{}", style("Portal Doctor").bold());
+    println!();
+
+    // Managed-vs-excluded overview.
+    println!("  {}", style("Managed directories").bold());
+    for row in &report.managed_dirs {
+        let marker = if row.exists {
+            style("✓").green()
+        } else {
+            style("·").dim()
+        };
+        println!(
+            "    {marker} {:<16} {:<10} {}",
+            row.dir,
+            style(format!("[{}]", row.category)).dim(),
+            if row.exists {
+                format!("{} file(s)", row.file_count)
+            } else {
+                style("missing").dim().to_string()
+            }
+        );
+    }
+    println!(
+        "    {} ignored: {}",
+        style("·").dim(),
+        style(report.excluded_patterns.join(", ")).dim()
+    );
+    println!();
+
+    // Checks.
+    println!("  {}", style("Checks").bold());
+    for c in &report.checks {
+        println!(
+            "    {} {}: {}",
+            severity_icon(c.severity),
+            c.title,
+            c.detail
+        );
+    }
+
+    // Fixes.
+    let fixable: Vec<&doctor::Check> = report.fixable().collect();
+    if !fixable.is_empty() {
+        println!();
+        if fix {
+            for c in &fixable {
+                apply_doctor_fix(cli, paths, c)?;
+            }
+        } else {
+            println!(
+                "  {} {} fixable issue(s). Run {} to repair.",
+                style("→").cyan(),
+                fixable.len(),
+                style("portal doctor --fix").bold()
+            );
+        }
+    }
+
+    // Re-evaluate so the exit code reflects post-fix reality.
+    let final_report = if fix {
+        doctor::diagnose(paths)?
+    } else {
+        report
+    };
+    if final_report.has_errors() {
+        bail!("portal doctor found unresolved error(s).");
+    }
+    Ok(())
+}
+
+/// Prompt for and apply a single fix. Legacy roots get a migrate/delete/skip
+/// choice; everything else is a yes/no confirm. `--force` skips prompts.
+fn apply_doctor_fix(cli: &Cli, paths: &PortalPaths, check: &doctor::Check) -> Result<()> {
+    let Some(action) = &check.fix else {
+        return Ok(());
+    };
+
+    let action = match action {
+        doctor::FixAction::MigrateLegacyRoot { name, dir } if !cli.force => {
+            if !is_interactive() {
+                println!(
+                    "  {} {} (skipped; use --force or run interactively)",
+                    style("·").dim(),
+                    check.detail
+                );
+                return Ok(());
+            }
+            let choice = dialoguer::Select::new()
+                .with_prompt(format!("Legacy profile \"{name}\""))
+                .items(&["Migrate into active root", "Delete", "Skip"])
+                .default(0)
+                .interact()?;
+            match choice {
+                0 => doctor::FixAction::MigrateLegacyRoot {
+                    name: name.clone(),
+                    dir: dir.clone(),
+                },
+                1 => doctor::FixAction::DeleteLegacyRoot { dir: dir.clone() },
+                _ => return Ok(()),
+            }
+        }
+        other if !cli.force => {
+            if !is_interactive() {
+                println!(
+                    "  {} {} (skipped; use --force or run interactively)",
+                    style("·").dim(),
+                    check.detail
+                );
+                return Ok(());
+            }
+            let proceed = dialoguer::Confirm::new()
+                .with_prompt(format!("Fix: {}?", check.detail))
+                .default(true)
+                .interact()?;
+            if !proceed {
+                return Ok(());
+            }
+            other.clone()
+        }
+        other => other.clone(),
+    };
+
+    match doctor::apply_fix(paths, &action) {
+        Ok(summary) => println!("  {} {summary}", style("✓").green().bold()),
+        Err(e) => println!("  {} {e}", style("✗").red().bold()),
+    }
+    Ok(())
+}
+
+fn severity_icon(s: doctor::Severity) -> console::StyledObject<&'static str> {
+    match s {
+        doctor::Severity::Ok => style("✓").green(),
+        doctor::Severity::Info => style("·").dim(),
+        doctor::Severity::Warning => style("!").yellow(),
+        doctor::Severity::Error => style("✗").red(),
+    }
+}
+
+// ── history ──────────────────────────────────────────────────────────
+
+fn cmd_history(_cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> {
+    let profile = match name {
+        Some(n) => n.to_string(),
+        None => {
+            let Some(active) = state::read(&paths.state_file())?.active_profile else {
+                bail!("No active profile; specify a profile name.");
+            };
+            active
+        }
+    };
+
+    let commits = git_history::log(paths, &profile)?;
+    println!(
+        "{} {}",
+        style("History for").bold(),
+        style(&profile).green().bold()
+    );
+    if commits.is_empty() {
+        println!("  {}", style("(no history recorded yet)").dim());
+        return Ok(());
+    }
+    for c in &commits {
+        let short = &c.hash[..c.hash.len().min(8)];
+        println!(
+            "  {} {}  {}",
+            style(short).yellow(),
+            style(&c.timestamp).dim(),
+            c.summary
+        );
+    }
     Ok(())
 }
 

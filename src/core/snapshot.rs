@@ -252,6 +252,10 @@ pub fn save_with_progress(
     };
     meta::write(&paths.profile_meta(name), &profile_meta)?;
 
+    // Record this save on the profile's git history branch (best-effort —
+    // never fails the save).
+    crate::core::git_history::record_snapshot_best_effort(paths, name, &manifest);
+
     Ok(manifest)
 }
 
