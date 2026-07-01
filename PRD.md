@@ -402,13 +402,19 @@ The plugin blueprint captures which plugins are installed, their source, and eno
 portal                          Launch TUI (interactive mode)
 portal save [NAME]              Save current .claude/ as profile (prompts if no name)
 portal load <NAME>              Load profile (atomic swap, auto-backup, plugin reinstall)
+portal toggle                   Swap back to the previously active profile (instant)
+portal use [NAME]               Launch claude bound to a profile's isolated CLAUDE_CONFIG_DIR (no swap)
 portal list                     List all profiles (table format)
 portal show <NAME>              Show profile details + file manifest + plugins
 portal diff <A> [B]             Diff two profiles (B defaults to skeleton)
+portal clone <SRC> <DST>        Fork a profile selectively (--only/--without/--fresh-claude-md)
 portal rm <NAME>                Delete a profile (requires confirmation)
 portal reset                    Reset .claude/ to skeleton
 portal undo                     Undo last load/reset (restore from backup)
+portal recover                  Recover from a crashed swap (.claude.portal-old)
 portal status                   Show current active profile + state + plugin health
+portal doctor                   Diagnose portal health + offer guided repairs (--fix)
+portal history [NAME]           Show a profile's git history (commits on its history branch)
 portal rename <OLD> <NEW>       Rename a profile
 portal export <NAME> [PATH]     Export profile as .tar.zst archive
 portal import <PATH>            Import profile from .tar.zst archive
