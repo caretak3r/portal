@@ -125,6 +125,7 @@ pub fn materialize(paths: &PortalPaths, name: &str, force: bool) -> Result<BindT
 }
 
 /// True when `live/<name>` has been materialized at least once (its stamp exists).
+#[must_use]
 pub fn is_materialized(paths: &PortalPaths, name: &str) -> bool {
     paths.live_dir(name).join(STAMP_FILE).is_file()
 }
