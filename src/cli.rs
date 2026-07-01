@@ -1657,15 +1657,14 @@ fn cmd_use(
     };
 
     let target = if no_refresh {
-        let dir = paths.live_dir(&profile);
-        if !dir.join(".portal-stamp").is_file() {
+        if !bind::is_materialized(paths, &profile) {
             bail!(
                 "Profile \"{profile}\" has no materialized session dir yet. \
                  Run `portal use {profile}` once without --no-refresh first."
             );
         }
         bind::BindTarget {
-            dir,
+            dir: paths.live_dir(&profile),
             refreshed: false,
         }
     } else {

@@ -124,6 +124,11 @@ pub fn materialize(paths: &PortalPaths, name: &str, force: bool) -> Result<BindT
     })
 }
 
+/// True when `live/<name>` has been materialized at least once (its stamp exists).
+pub fn is_materialized(paths: &PortalPaths, name: &str) -> bool {
+    paths.live_dir(name).join(STAMP_FILE).is_file()
+}
+
 /// Remove a tracked file under `dir`, treating an already-absent path as success.
 fn remove_tracked(dir: &Path, rel: &str) -> Result<()> {
     let p = dir.join(rel);
@@ -163,5 +168,18 @@ mod tests {
 
         let m = manifest::read(&paths.profile_manifest("p")).expect("manifest");
         assert_eq!(manifest_hash(&m), manifest_hash(&m));
+    }
+
+    #[test]
+    fn is_materialized_tracks_stamp() {
+        let (_tmp, paths) = sandbox();
+        let claude = paths.claude_root();
+        skeleton::create(&claude).expect("skeleton");
+        std::fs::write(claude.join("CLAUDE.md"), "hello").expect("write");
+        snapshot::save(&paths, "p", "p", &[]).expect("save");
+
+        assert!(!is_materialized(&paths, "p"));
+        materialize(&paths, "p", false).expect("materialize");
+        assert!(is_materialized(&paths, "p"));
     }
 }
