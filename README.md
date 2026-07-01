@@ -401,6 +401,7 @@ reinstall_timeout_secs = 30
 - [x] `export` / `import`
 - [x] `recover`
 - [x] `clone` with `--only`, `--without`, `--fresh-claude-md`
+- [x] `use` (bind-mode isolated session) with `--print-env`, `--no-refresh`
 - [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
 
 ### TUI
