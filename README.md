@@ -52,7 +52,7 @@ cargo install --path .                            # CLI + TUI (default)
 cargo install --path . --no-default-features      # lean CLI, no TUI deps
 ```
 
-Requires Rust 1.85+.
+Requires Rust 1.88+.
 
 ## What Gets Tracked
 
@@ -204,6 +204,24 @@ portal import ~/Downloads/colleague-config.portal.tar.zst
 ### `portal recover`
 
 If a previous swap crashed and left a `.claude.portal-old` directory behind, this command lets you keep the current state, roll back to the old state, or cancel.
+
+### `portal doctor`
+
+Diagnose portal health and show what's managed. Reports the managed directories (with file counts) versus the ignored/excluded patterns, then runs health checks: storage root, active profile, skeleton completeness, per-profile history, a leftover `.claude.portal-old` from a crashed swap, a legacy `~/.portal` root, and backups. Fixable issues are listed; `--fix` applies guided repairs (migrate or delete a legacy root, recreate missing skeleton files, remove a crash leftover), prompting before each unless `--force`. Exits non-zero if unresolved errors remain.
+
+```bash
+portal doctor          # report health and list fixable issues
+portal doctor --fix    # apply guided repairs (prompts each; --force to skip prompts)
+```
+
+### `portal history [NAME]`
+
+Show a profile's git history — the commits recorded on its history branch, newest first, as short hash, timestamp, and summary. Defaults to the active profile; prints a notice if no history has been recorded yet.
+
+```bash
+portal history                 # active profile
+portal history work-redteam
+```
 
 ### `portal use [NAME]` — isolated sessions
 
@@ -394,12 +412,15 @@ reinstall_timeout_secs = 30
 
 - [x] `save` with interactive prompts, save-game overwrite, dry-run
 - [x] `load` with atomic swap, backup, plugin reinstall
+- [x] `toggle` to the previously active profile
 - [x] `list`, `show`, `diff`, `rm`, `reset`, `undo`
 - [x] `status` with integrity check and plugin health
 - [x] `rename` with state update
 - [x] `verify` with `--fix-plugins`
 - [x] `export` / `import`
 - [x] `recover`
+- [x] `doctor` with `--fix` guided repairs
+- [x] `history` (per-profile git commit log)
 - [x] `clone` with `--only`, `--without`, `--fresh-claude-md`
 - [x] `use` (bind-mode isolated session) with `--print-env`, `--no-refresh`
 - [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
