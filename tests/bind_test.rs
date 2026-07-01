@@ -31,7 +31,11 @@ fn save_profile(paths: &PortalPaths, name: &str, files: &[(&str, &str)]) {
 #[test]
 fn materialize_lays_down_tracked_files() {
     let (_tmp, paths) = sandbox();
-    save_profile(&paths, "alpha", &[("CLAUDE.md", "alpha config"), ("rules/r.md", "# rule")]);
+    save_profile(
+        &paths,
+        "alpha",
+        &[("CLAUDE.md", "alpha config"), ("rules/r.md", "# rule")],
+    );
 
     let target = bind::materialize(&paths, "alpha", false).expect("materialize");
     assert!(target.refreshed, "first materialize must place files");
@@ -52,7 +56,9 @@ fn materialize_preserves_runtime_data_across_refresh() {
     let (_tmp, paths) = sandbox();
     save_profile(&paths, "beta", &[("CLAUDE.md", "v1")]);
 
-    let dir = bind::materialize(&paths, "beta", false).expect("materialize").dir;
+    let dir = bind::materialize(&paths, "beta", false)
+        .expect("materialize")
+        .dir;
 
     // Simulate session runtime data landing in the live dir (never tracked).
     let runtime = dir.join("projects/x.json");
@@ -83,7 +89,9 @@ fn stamp_skips_noop_refresh() {
     let (_tmp, paths) = sandbox();
     save_profile(&paths, "gamma", &[("CLAUDE.md", "stable")]);
 
-    let dir = bind::materialize(&paths, "gamma", false).expect("materialize").dir;
+    let dir = bind::materialize(&paths, "gamma", false)
+        .expect("materialize")
+        .dir;
     let tracked = dir.join("CLAUDE.md");
     let mtime_before = std::fs::metadata(&tracked).unwrap().modified().unwrap();
 
@@ -92,16 +100,28 @@ fn stamp_skips_noop_refresh() {
     assert!(!second.refreshed, "unchanged manifest must not refresh");
 
     let mtime_after = std::fs::metadata(&tracked).unwrap().modified().unwrap();
-    assert_eq!(mtime_before, mtime_after, "no-op refresh must not rewrite files");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "no-op refresh must not rewrite files"
+    );
 }
 
 #[test]
 fn refresh_removes_deleted_tracked_file() {
     let (_tmp, paths) = sandbox();
-    save_profile(&paths, "delta", &[("CLAUDE.md", "cfg"), ("rules/drop.md", "bye")]);
+    save_profile(
+        &paths,
+        "delta",
+        &[("CLAUDE.md", "cfg"), ("rules/drop.md", "bye")],
+    );
 
-    let dir = bind::materialize(&paths, "delta", false).expect("materialize").dir;
-    assert!(dir.join("rules/drop.md").exists(), "file present after first materialize");
+    let dir = bind::materialize(&paths, "delta", false)
+        .expect("materialize")
+        .dir;
+    assert!(
+        dir.join("rules/drop.md").exists(),
+        "file present after first materialize"
+    );
 
     // Drop the file from the profile and re-save.
     std::fs::remove_file(paths.claude_root().join("rules/drop.md")).expect("remove");
@@ -113,16 +133,28 @@ fn refresh_removes_deleted_tracked_file() {
         !dir.join("rules/drop.md").exists(),
         "tracked file dropped from manifest must be unlinked on refresh"
     );
-    assert!(dir.join("CLAUDE.md").exists(), "surviving tracked file remains");
+    assert!(
+        dir.join("CLAUDE.md").exists(),
+        "surviving tracked file remains"
+    );
 }
 
 #[test]
 fn corrupt_live_manifest_recovers_on_refresh() {
     let (_tmp, paths) = sandbox();
-    save_profile(&paths, "epsilon", &[("CLAUDE.md", "cfg"), ("rules/r.md", "# rule")]);
+    save_profile(
+        &paths,
+        "epsilon",
+        &[("CLAUDE.md", "cfg"), ("rules/r.md", "# rule")],
+    );
 
-    let dir = bind::materialize(&paths, "epsilon", false).expect("materialize").dir;
-    assert!(dir.join("CLAUDE.md").exists(), "tracked file present after first materialize");
+    let dir = bind::materialize(&paths, "epsilon", false)
+        .expect("materialize")
+        .dir;
+    assert!(
+        dir.join("CLAUDE.md").exists(),
+        "tracked file present after first materialize"
+    );
 
     // Simulate an interrupted `manifest::write`: truncated/garbage manifest plus a
     // stale stamp, while the tracked files it laid down still exist on disk.
@@ -149,18 +181,31 @@ fn two_live_dirs_are_independent() {
     // Re-seed claude root for the second profile.
     save_profile(&paths, "two", &[("CLAUDE.md", "two")]);
 
-    let dir1 = bind::materialize(&paths, "one", false).expect("materialize one").dir;
-    let dir2 = bind::materialize(&paths, "two", false).expect("materialize two").dir;
+    let dir1 = bind::materialize(&paths, "one", false)
+        .expect("materialize one")
+        .dir;
+    let dir2 = bind::materialize(&paths, "two", false)
+        .expect("materialize two")
+        .dir;
     assert_ne!(dir1, dir2);
 
     // Runtime write into one is invisible to the other.
     std::fs::create_dir_all(dir1.join("projects")).expect("mkdir");
     std::fs::write(dir1.join("projects/a.json"), "a").expect("write");
-    assert!(!dir2.join("projects/a.json").exists(), "live dirs must be isolated");
+    assert!(
+        !dir2.join("projects/a.json").exists(),
+        "live dirs must be isolated"
+    );
 
     // And their tracked content is distinct.
-    assert_eq!(std::fs::read_to_string(dir1.join("CLAUDE.md")).unwrap(), "one");
-    assert_eq!(std::fs::read_to_string(dir2.join("CLAUDE.md")).unwrap(), "two");
+    assert_eq!(
+        std::fs::read_to_string(dir1.join("CLAUDE.md")).unwrap(),
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir2.join("CLAUDE.md")).unwrap(),
+        "two"
+    );
 }
 
 #[test]
@@ -184,8 +229,16 @@ fn cli_use_print_env_prints_live_dir() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let home = tmp.path();
 
-    portal_cmd().env("HOME", home).args(["reset", "--force"]).assert().success();
-    portal_cmd().env("HOME", home).args(["save", "wip", "--force"]).assert().success();
+    portal_cmd()
+        .env("HOME", home)
+        .args(["reset", "--force"])
+        .assert()
+        .success();
+    portal_cmd()
+        .env("HOME", home)
+        .args(["save", "wip", "--force"])
+        .assert()
+        .success();
 
     portal_cmd()
         .env("HOME", home)

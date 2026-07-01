@@ -75,8 +75,7 @@ pub fn materialize(paths: &PortalPaths, name: &str, force: bool) -> Result<BindT
     let stamp_path = dir.join(STAMP_FILE);
 
     // Fast path: an unchanged manifest means the live dir is already current.
-    if !force
-        && std::fs::read_to_string(&stamp_path).is_ok_and(|existing| existing.trim() == hash)
+    if !force && std::fs::read_to_string(&stamp_path).is_ok_and(|existing| existing.trim() == hash)
     {
         return Ok(BindTarget {
             dir,
