@@ -92,16 +92,22 @@ pub fn materialize(paths: &PortalPaths, name: &str, force: bool) -> Result<BindT
     // (which refuses to overwrite) can re-place them. Runtime paths are untouched
     // because they were never in the previous manifest.
     let live_manifest_path = dir.join(LIVE_MANIFEST_FILE);
-    if let Ok(prev) = manifest::read(&live_manifest_path) {
-        for rel in prev.files.keys() {
-            let p = dir.join(rel);
-            match std::fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(e)
-                        .with_context(|| format!("removing stale tracked file: {}", p.display()));
-                }
+    match manifest::read(&live_manifest_path) {
+        Ok(prev) => {
+            for rel in prev.files.keys() {
+                remove_tracked(&dir, rel)?;
+            }
+        }
+        // Genuinely missing prior manifest: first materialize, nothing to reconcile.
+        Err(_) if !live_manifest_path.exists() => {}
+        // Corrupt/unparseable prior manifest (e.g. an interrupted `manifest::write`
+        // left a truncated file while the stamp is stale). We can't reconcile
+        // deletions, but we must still free any NEW tracked path that already exists
+        // so `place_fresh` won't fail with EEXIST and wedge live/<name>. Only the new
+        // manifest's paths are touched, so runtime data stays intact.
+        Err(_) => {
+            for rel in manifest.files.keys() {
+                remove_tracked(&dir, rel)?;
             }
         }
     }
@@ -117,6 +123,16 @@ pub fn materialize(paths: &PortalPaths, name: &str, force: bool) -> Result<BindT
         dir,
         refreshed: true,
     })
+}
+
+/// Remove a tracked file under `dir`, treating an already-absent path as success.
+fn remove_tracked(dir: &Path, rel: &str) -> Result<()> {
+    let p = dir.join(rel);
+    match std::fs::remove_file(&p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing stale tracked file: {}", p.display())),
+    }
 }
 
 fn write_stamp(path: &Path, hash: &str) -> Result<()> {

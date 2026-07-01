@@ -1674,7 +1674,10 @@ fn cmd_use(
     };
 
     if print_env {
-        println!("export CLAUDE_CONFIG_DIR={}", target.dir.display());
+        println!(
+            "export CLAUDE_CONFIG_DIR={}",
+            shell_single_quote(&target.dir.to_string_lossy())
+        );
         return Ok(());
     }
 
@@ -1691,6 +1694,13 @@ fn cmd_use(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+/// Single-quote a string for safe use in a POSIX shell, escaping embedded
+/// single quotes with the `'\''` idiom so `eval "$(… --print-env)"` is safe
+/// even when the path contains spaces or shell metacharacters.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
 fn is_interactive() -> bool {
     use std::io::IsTerminal;

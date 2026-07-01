@@ -117,6 +117,32 @@ fn refresh_removes_deleted_tracked_file() {
 }
 
 #[test]
+fn corrupt_live_manifest_recovers_on_refresh() {
+    let (_tmp, paths) = sandbox();
+    save_profile(&paths, "epsilon", &[("CLAUDE.md", "cfg"), ("rules/r.md", "# rule")]);
+
+    let dir = bind::materialize(&paths, "epsilon", false).expect("materialize").dir;
+    assert!(dir.join("CLAUDE.md").exists(), "tracked file present after first materialize");
+
+    // Simulate an interrupted `manifest::write`: truncated/garbage manifest plus a
+    // stale stamp, while the tracked files it laid down still exist on disk.
+    std::fs::write(dir.join(".portal-manifest.json"), "{ truncated").expect("corrupt manifest");
+    std::fs::write(dir.join(".portal-stamp"), "stale-hash").expect("stale stamp");
+
+    // Next refresh must recover (not fail with EEXIST) and re-lay the tracked files.
+    let target = bind::materialize(&paths, "epsilon", false).expect("recovering re-materialize");
+    assert!(target.refreshed, "stale stamp must trigger a refresh");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("CLAUDE.md")).expect("read CLAUDE.md"),
+        "cfg"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("rules/r.md")).expect("read rule"),
+        "# rule"
+    );
+}
+
+#[test]
 fn two_live_dirs_are_independent() {
     let (_tmp, paths) = sandbox();
     save_profile(&paths, "one", &[("CLAUDE.md", "one")]);

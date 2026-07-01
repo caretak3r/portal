@@ -228,6 +228,7 @@ Because the session reads its config from an isolated directory, running `portal
 - **Project-level config still layers on top.** A `.claude/` directory or `.mcp.json` in your current working directory is applied on top of the profile and is shared whenever two profiles work in the same repo.
 - **Enterprise/managed settings still apply** regardless of which profile you bind to.
 - **Isolation is at launch only.** You cannot rebind an already-running session; start a new `portal use` to switch.
+- **Two `portal use <same-profile>` sessions share one `live/<name>` dir.** Editing that profile between launches re-places its tracked files under a still-running first session; the isolation guarantee covers `portal load` of *other* profiles, not concurrent binds of the same one.
 
 ### Global Flags
 
