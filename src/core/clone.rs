@@ -78,6 +78,7 @@ pub fn parse_categories(input: &str) -> Result<Vec<Category>> {
 }
 
 /// Determine which category a file path belongs to.
+#[must_use]
 pub fn categorize_file(rel_path: &str) -> Category {
     if rel_path == "CLAUDE.md" {
         Category::ClaudeMd

@@ -173,12 +173,12 @@ enum Commands {
 /// CWD search is restricted to interactive mode so test sandboxes (which set
 /// `HOME` but not `CWD`) don't accidentally pick up the project's own `.claude`.
 fn discover_claude_dir(home_default: &std::path::Path) -> Option<PathBuf> {
-    if is_interactive() {
-        if let Ok(cwd) = std::env::current_dir() {
-            let p = cwd.join(".claude");
-            if p.is_dir() {
-                return Some(p);
-            }
+    if is_interactive()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        let p = cwd.join(".claude");
+        if p.is_dir() {
+            return Some(p);
         }
     }
     if home_default.is_dir() {
@@ -233,11 +233,10 @@ fn ensure_claude_dir_confirmed(paths: &PortalPaths) -> Result<PortalPaths> {
         config::save(&cfg, &config_path)?;
     }
 
-    if let Some(dir) = cfg.claude_dir {
-        Ok(paths.clone().with_claude_override(dir))
-    } else {
-        Ok(paths.clone())
-    }
+    cfg.claude_dir.map_or_else(
+        || Ok(paths.clone()),
+        |dir| Ok(paths.clone().with_claude_override(dir)),
+    )
 }
 
 /// Run the CLI entry point.
@@ -1604,14 +1603,13 @@ fn severity_icon(s: doctor::Severity) -> console::StyledObject<&'static str> {
 // ── history ──────────────────────────────────────────────────────────
 
 fn cmd_history(_cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> {
-    let profile = match name {
-        Some(n) => n.to_string(),
-        None => {
-            let Some(active) = state::read(&paths.state_file())?.active_profile else {
-                bail!("No active profile; specify a profile name.");
-            };
-            active
-        }
+    let profile = if let Some(n) = name {
+        n.to_string()
+    } else {
+        let Some(active) = state::read(&paths.state_file())?.active_profile else {
+            bail!("No active profile; specify a profile name.");
+        };
+        active
     };
 
     let commits = git_history::log(paths, &profile)?;
@@ -1646,15 +1644,16 @@ fn cmd_use(
     no_refresh: bool,
     args: &[String],
 ) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
     // Resolve the profile: explicit name, else the active profile.
-    let profile = match name {
-        Some(n) => n.to_string(),
-        None => {
-            let Some(active) = state::read(&paths.state_file())?.active_profile else {
-                bail!("No active profile; specify a profile name.");
-            };
-            active
-        }
+    let profile = if let Some(n) = name {
+        n.to_string()
+    } else {
+        let Some(active) = state::read(&paths.state_file())?.active_profile else {
+            bail!("No active profile; specify a profile name.");
+        };
+        active
     };
 
     let target = if no_refresh {
@@ -1683,7 +1682,6 @@ fn cmd_use(
 
     // Replace this process with `claude`, bound to the isolated config dir. On
     // success exec never returns; a returned error means the launch failed.
-    use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("claude");
     cmd.env("CLAUDE_CONFIG_DIR", &target.dir).args(args);
     let err = cmd.exec();

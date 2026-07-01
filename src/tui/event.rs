@@ -439,7 +439,7 @@ fn handle_file_picker(app: &mut App, code: KeyCode) {
 
 /// Returns true for categories that hold many individual files and therefore
 /// benefit from a per-file picker (directory-based categories).
-fn is_pickable(cat: Category) -> bool {
+const fn is_pickable(cat: Category) -> bool {
     matches!(
         cat,
         Category::Skills | Category::Rules | Category::Commands | Category::Agents
