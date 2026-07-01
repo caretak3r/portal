@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod bind;
 pub mod checksum;
 pub mod clone;
 pub mod diff;

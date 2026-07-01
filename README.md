@@ -205,6 +205,30 @@ portal import ~/Downloads/colleague-config.portal.tar.zst
 
 If a previous swap crashed and left a `.claude.portal-old` directory behind, this command lets you keep the current state, roll back to the old state, or cancel.
 
+### `portal use [NAME]` — isolated sessions
+
+Launch a `claude` session bound to a profile's **own** config directory instead of swapping `~/.claude`. Portal materializes the profile into a private dir under `~/.config/portal/live/<name>/` and launches `claude` with `CLAUDE_CONFIG_DIR` pointed at it (replacing the current process, so your terminal becomes that session).
+
+```bash
+portal use work           # launch claude bound to the "work" profile
+portal use                # bind to the currently active profile
+portal use work -- --model opus-4   # extra args after `--` pass through to claude
+```
+
+Because the session reads its config from an isolated directory, running `portal load <other>` (the swap flow) in another terminal **never disturbs a running bound session** — the two are decoupled. The materialized dir is a cache: it is refreshed from the profile on each `portal use` (a no-op when the profile hasn't changed), and it never contains anything but the profile's tracked files. Session runtime (`projects/`, `todos/`, plugin caches, etc.) accumulates in the live dir and is preserved across refreshes.
+
+| Flag | Effect |
+|------|--------|
+| `--print-env` | Print `export CLAUDE_CONFIG_DIR=…` instead of launching (for `eval "$(portal use work --print-env)"`) |
+| `--no-refresh` | Bind to the already-materialized dir without refreshing from the profile |
+
+**Caveats:**
+
+- **macOS Keychain credentials are shared.** On macOS, Claude stores login credentials in the system Keychain, which is *not* part of the config dir — so `portal use` isolates configuration but **not** login. On Linux/Windows, credentials live in the config dir and *are* isolated (each profile logs in separately).
+- **Project-level config still layers on top.** A `.claude/` directory or `.mcp.json` in your current working directory is applied on top of the profile and is shared whenever two profiles work in the same repo.
+- **Enterprise/managed settings still apply** regardless of which profile you bind to.
+- **Isolation is at launch only.** You cannot rebind an already-running session; start a new `portal use` to switch.
+
 ### Global Flags
 
 | Flag | Effect |
@@ -321,6 +345,8 @@ Diffs run at four levels:
     research/
   skeleton/              # reference skeleton
   backups/               # timestamped tar.zst backups
+  live/                  # isolated per-session config dirs (see `portal use`)
+    work/                #   CLAUDE_CONFIG_DIR target: tracked files + session runtime
   portal.state.json      # active profile tracking
   portal.lock            # file lock for concurrent access
   portal.config.toml     # optional configuration

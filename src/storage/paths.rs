@@ -68,6 +68,18 @@ impl PortalPaths {
         self.portal_root().join("history")
     }
 
+    /// Root for per-session bind-mode config dirs (`CLAUDE_CONFIG_DIR` targets).
+    #[must_use]
+    pub fn live_root(&self) -> PathBuf {
+        self.portal_root().join("live")
+    }
+
+    /// The isolated config dir a `portal use <name>` session binds to.
+    #[must_use]
+    pub fn live_dir(&self, name: &str) -> PathBuf {
+        self.live_root().join(name)
+    }
+
     #[must_use]
     pub fn profiles_root(&self) -> PathBuf {
         self.portal_root().join("profiles")
@@ -177,6 +189,7 @@ impl PortalPaths {
         std::fs::create_dir_all(self.skeleton_dir())?;
         std::fs::create_dir_all(self.backups_dir())?;
         std::fs::create_dir_all(self.objects_root())?;
+        std::fs::create_dir_all(self.live_root())?;
         Ok(())
     }
 }
