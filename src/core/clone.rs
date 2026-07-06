@@ -78,6 +78,7 @@ pub fn parse_categories(input: &str) -> Result<Vec<Category>> {
 }
 
 /// Determine which category a file path belongs to.
+#[must_use]
 pub fn categorize_file(rel_path: &str) -> Category {
     if rel_path == "CLAUDE.md" {
         Category::ClaudeMd
@@ -228,9 +229,7 @@ pub fn clone_profile_with_progress(
             .file_picks
             .as_ref()
             .and_then(|p| p.get(&cat))
-            .is_some_and(|allowed| {
-                !allowed.is_empty() && !allowed.contains(rel_path.as_str())
-            })
+            .is_some_and(|allowed| !allowed.is_empty() && !allowed.contains(rel_path.as_str()))
         {
             skipped += 1;
             continue;

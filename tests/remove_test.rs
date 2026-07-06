@@ -21,7 +21,9 @@ fn setup_profile(name: &str) -> (tempfile::TempDir, PortalPaths) {
 
 /// Drop a fake backup archive into the backups dir; returns its path.
 fn seed_backup(paths: &PortalPaths) -> std::path::PathBuf {
-    let backup = paths.backups_dir().join("pre-load-2026-06-16T09-00-00.tar.zst");
+    let backup = paths
+        .backups_dir()
+        .join("pre-load-2026-06-16T09-00-00.tar.zst");
     std::fs::write(&backup, b"fake-compressed-bytes").unwrap();
     backup
 }
@@ -39,7 +41,10 @@ fn delete_removes_profile_dir_but_keeps_backups() {
     // Profile reference is gone...
     assert!(!paths.profile_dir("work").exists());
     // ...but the compressed backup survives — this is the whole point.
-    assert!(backup.exists(), "backup must NOT be deleted with the profile");
+    assert!(
+        backup.exists(),
+        "backup must NOT be deleted with the profile"
+    );
     assert!(paths.backups_dir().exists());
 }
 

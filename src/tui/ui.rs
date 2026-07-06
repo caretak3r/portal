@@ -339,7 +339,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     };
     let tree_block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT)
-        .title(Span::styled(tree_title, Style::default().fg(Color::DarkGray)));
+        .title(Span::styled(
+            tree_title,
+            Style::default().fg(Color::DarkGray),
+        ));
 
     let inner = tree_block.inner(tree_area);
     frame.render_widget(tree_block, tree_area);
@@ -386,7 +389,9 @@ fn render_detail(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         } else if row.is_dir {
             (
                 Style::default().fg(Color::Yellow),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )
         } else {
             (Style::default().fg(Color::Green), Style::default())
@@ -1062,10 +1067,7 @@ fn render_clone_dialog(frame: &mut Frame, app: &App, area: ratatui::layout::Rect
             // Build a suffix: fresh_md hint, or pick count for pickable categories.
             let pickable = matches!(
                 cat,
-                Category::Skills
-                    | Category::Rules
-                    | Category::Commands
-                    | Category::Agents
+                Category::Skills | Category::Rules | Category::Commands | Category::Agents
             );
             let suffix = if i == 0 && app.clone_fresh_md {
                 " (using empty instead)".to_string()

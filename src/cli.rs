@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use console::style;
 use std::path::PathBuf;
@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use portal::config;
 use portal::core::progress::ProgressReporter;
 use portal::core::{
-    backup, checksum, clone, diff, doctor, git_history, loader, plugins, remove, safety, skeleton,
-    snapshot, transport,
+    backup, bind, checksum, clone, diff, doctor, git_history, loader, plugins, remove, safety,
+    skeleton, snapshot, transport,
 };
 use portal::storage::{manifest, paths::PortalPaths, plugins_manifest, state};
 
@@ -152,6 +152,20 @@ enum Commands {
         /// Profile name (defaults to the active profile)
         name: Option<String>,
     },
+    /// Launch a claude session bound to a profile's isolated config dir (no swap)
+    Use {
+        /// Profile name (defaults to the active profile)
+        name: Option<String>,
+        /// Print the `export CLAUDE_CONFIG_DIR=…` line instead of launching
+        #[arg(long)]
+        print_env: bool,
+        /// Bind to the already-materialized dir without refreshing from CAS
+        #[arg(long)]
+        no_refresh: bool,
+        /// Args passed through to `claude`
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
 }
 
 /// Search for an existing `.claude` directory: CWD first (interactive only), then `home_default`.
@@ -159,12 +173,12 @@ enum Commands {
 /// CWD search is restricted to interactive mode so test sandboxes (which set
 /// `HOME` but not `CWD`) don't accidentally pick up the project's own `.claude`.
 fn discover_claude_dir(home_default: &std::path::Path) -> Option<PathBuf> {
-    if is_interactive() {
-        if let Ok(cwd) = std::env::current_dir() {
-            let p = cwd.join(".claude");
-            if p.is_dir() {
-                return Some(p);
-            }
+    if is_interactive()
+        && let Ok(cwd) = std::env::current_dir()
+    {
+        let p = cwd.join(".claude");
+        if p.is_dir() {
+            return Some(p);
         }
     }
     if home_default.is_dir() {
@@ -219,11 +233,10 @@ fn ensure_claude_dir_confirmed(paths: &PortalPaths) -> Result<PortalPaths> {
         config::save(&cfg, &config_path)?;
     }
 
-    if let Some(dir) = cfg.claude_dir {
-        Ok(paths.clone().with_claude_override(dir))
-    } else {
-        Ok(paths.clone())
-    }
+    cfg.claude_dir.map_or_else(
+        || Ok(paths.clone()),
+        |dir| Ok(paths.clone().with_claude_override(dir)),
+    )
 }
 
 /// Run the CLI entry point.
@@ -282,6 +295,12 @@ pub fn run() -> Result<()> {
         Some(Commands::Recover) => cmd_recover(&cli, &paths),
         Some(Commands::Doctor { fix }) => cmd_doctor(&cli, &paths, *fix),
         Some(Commands::History { name }) => cmd_history(&cli, &paths, name.as_deref()),
+        Some(Commands::Use {
+            name,
+            print_env,
+            no_refresh,
+            args,
+        }) => cmd_use(&cli, &paths, name.as_deref(), *print_env, *no_refresh, args),
     }
 }
 
@@ -346,6 +365,10 @@ fn cmd_no_subcommand(paths: &PortalPaths) -> Result<()> {
         println!(
             "  {}    Show a profile's git history",
             style("history").green()
+        );
+        println!(
+            "  {}        Launch a session bound to an isolated config dir",
+            style("use").green()
         );
         println!();
         println!(
@@ -1580,14 +1603,13 @@ fn severity_icon(s: doctor::Severity) -> console::StyledObject<&'static str> {
 // ── history ──────────────────────────────────────────────────────────
 
 fn cmd_history(_cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()> {
-    let profile = match name {
-        Some(n) => n.to_string(),
-        None => {
-            let Some(active) = state::read(&paths.state_file())?.active_profile else {
-                bail!("No active profile; specify a profile name.");
-            };
-            active
-        }
+    let profile = if let Some(n) = name {
+        n.to_string()
+    } else {
+        let Some(active) = state::read(&paths.state_file())?.active_profile else {
+            bail!("No active profile; specify a profile name.");
+        };
+        active
     };
 
     let commits = git_history::log(paths, &profile)?;
@@ -1612,7 +1634,70 @@ fn cmd_history(_cli: &Cli, paths: &PortalPaths, name: Option<&str>) -> Result<()
     Ok(())
 }
 
+// ── use (bind-mode) ──────────────────────────────────────────────────
+
+fn cmd_use(
+    _cli: &Cli,
+    paths: &PortalPaths,
+    name: Option<&str>,
+    print_env: bool,
+    no_refresh: bool,
+    args: &[String],
+) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+
+    // Resolve the profile: explicit name, else the active profile.
+    let profile = if let Some(n) = name {
+        n.to_string()
+    } else {
+        let Some(active) = state::read(&paths.state_file())?.active_profile else {
+            bail!("No active profile; specify a profile name.");
+        };
+        active
+    };
+
+    let target = if no_refresh {
+        if !bind::is_materialized(paths, &profile) {
+            bail!(
+                "Profile \"{profile}\" has no materialized session dir yet. \
+                 Run `portal use {profile}` once without --no-refresh first."
+            );
+        }
+        bind::BindTarget {
+            dir: paths.live_dir(&profile),
+            refreshed: false,
+        }
+    } else {
+        bind::materialize(paths, &profile, false)?
+    };
+
+    if print_env {
+        println!(
+            "export CLAUDE_CONFIG_DIR={}",
+            shell_single_quote(&target.dir.to_string_lossy())
+        );
+        return Ok(());
+    }
+
+    // Replace this process with `claude`, bound to the isolated config dir. On
+    // success exec never returns; a returned error means the launch failed.
+    let mut cmd = std::process::Command::new("claude");
+    cmd.env("CLAUDE_CONFIG_DIR", &target.dir).args(args);
+    let err = cmd.exec();
+    if err.kind() == std::io::ErrorKind::NotFound {
+        bail!("claude not found on PATH — install the Claude Code CLI to launch a bound session");
+    }
+    Err(err).with_context(|| "launching claude")
+}
+
 // ── helpers ──────────────────────────────────────────────────────────
+
+/// Single-quote a string for safe use in a POSIX shell, escaping embedded
+/// single quotes with the `'\''` idiom so `eval "$(… --print-env)"` is safe
+/// even when the path contains spaces or shell metacharacters.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
 fn is_interactive() -> bool {
     use std::io::IsTerminal;

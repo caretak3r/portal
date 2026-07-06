@@ -410,6 +410,25 @@ fn place_from_cas_parallel(
     Ok(())
 }
 
+/// Place a manifest's tracked files into `dest` from CAS (reflink where possible).
+/// Used by bind-mode materialization; no atomic swap, no runtime preservation.
+///
+/// `dest` must not already contain the manifest's tracked paths — the underlying
+/// CAS placement uses `place_fresh`, which refuses to overwrite (EEXIST). Bind-mode
+/// callers clear previously-tracked paths first; runtime paths are never tracked,
+/// so they are never in the manifest and thus never touched.
+///
+/// # Errors
+///
+/// Returns an error if any CAS object is missing or a placement fails.
+pub fn materialize_tracked(
+    paths: &PortalPaths,
+    manifest: &ProfileManifest,
+    dest: &Path,
+) -> Result<()> {
+    place_from_cas_parallel(paths, manifest, dest, &crate::core::progress::NoProgress)
+}
+
 /// Recursively copy files from `src` to `dst` with progress reporting.
 ///
 /// # Errors

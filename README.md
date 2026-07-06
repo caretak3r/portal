@@ -52,7 +52,7 @@ cargo install --path .                            # CLI + TUI (default)
 cargo install --path . --no-default-features      # lean CLI, no TUI deps
 ```
 
-Requires Rust 1.85+.
+Requires Rust 1.88+.
 
 ## What Gets Tracked
 
@@ -205,6 +205,49 @@ portal import ~/Downloads/colleague-config.portal.tar.zst
 
 If a previous swap crashed and left a `.claude.portal-old` directory behind, this command lets you keep the current state, roll back to the old state, or cancel.
 
+### `portal doctor`
+
+Diagnose portal health and show what's managed. Reports the managed directories (with file counts) versus the ignored/excluded patterns, then runs health checks: storage root, active profile, skeleton completeness, per-profile history, a leftover `.claude.portal-old` from a crashed swap, a legacy `~/.portal` root, and backups. Fixable issues are listed; `--fix` applies guided repairs (migrate or delete a legacy root, recreate missing skeleton files, remove a crash leftover), prompting before each unless `--force`. Exits non-zero if unresolved errors remain.
+
+```bash
+portal doctor          # report health and list fixable issues
+portal doctor --fix    # apply guided repairs (prompts each; --force to skip prompts)
+```
+
+### `portal history [NAME]`
+
+Show a profile's git history — the commits recorded on its history branch, newest first, as short hash, timestamp, and summary. Defaults to the active profile; prints a notice if no history has been recorded yet.
+
+```bash
+portal history                 # active profile
+portal history work-redteam
+```
+
+### `portal use [NAME]` — isolated sessions
+
+Launch a `claude` session bound to a profile's **own** config directory instead of swapping `~/.claude`. Portal materializes the profile into a private dir under `~/.config/portal/live/<name>/` and launches `claude` with `CLAUDE_CONFIG_DIR` pointed at it (replacing the current process, so your terminal becomes that session).
+
+```bash
+portal use work           # launch claude bound to the "work" profile
+portal use                # bind to the currently active profile
+portal use work -- --model opus-4   # extra args after `--` pass through to claude
+```
+
+Because the session reads its config from an isolated directory, running `portal load <other>` (the swap flow) in another terminal **never disturbs a running bound session** — the two are decoupled. The materialized dir is a cache: it is refreshed from the profile on each `portal use` (a no-op when the profile hasn't changed), and it never contains anything but the profile's tracked files. Session runtime (`projects/`, `todos/`, plugin caches, etc.) accumulates in the live dir and is preserved across refreshes.
+
+| Flag | Effect |
+|------|--------|
+| `--print-env` | Print `export CLAUDE_CONFIG_DIR=…` instead of launching (for `eval "$(portal use work --print-env)"`) |
+| `--no-refresh` | Bind to the already-materialized dir without refreshing from the profile |
+
+**Caveats:**
+
+- **macOS Keychain credentials are shared.** On macOS, Claude stores login credentials in the system Keychain, which is *not* part of the config dir — so `portal use` isolates configuration but **not** login. On Linux/Windows, credentials live in the config dir and *are* isolated (each profile logs in separately).
+- **Project-level config still layers on top.** A `.claude/` directory or `.mcp.json` in your current working directory is applied on top of the profile and is shared whenever two profiles work in the same repo.
+- **Enterprise/managed settings still apply** regardless of which profile you bind to.
+- **Isolation is at launch only.** You cannot rebind an already-running session; start a new `portal use` to switch.
+- **Two `portal use <same-profile>` sessions share one `live/<name>` dir.** Editing that profile between launches re-places its tracked files under a still-running first session; the isolation guarantee covers `portal load` of *other* profiles, not concurrent binds of the same one.
+
 ### Global Flags
 
 | Flag | Effect |
@@ -321,6 +364,8 @@ Diffs run at four levels:
     research/
   skeleton/              # reference skeleton
   backups/               # timestamped tar.zst backups
+  live/                  # isolated per-session config dirs (see `portal use`)
+    work/                #   CLAUDE_CONFIG_DIR target: tracked files + session runtime
   portal.state.json      # active profile tracking
   portal.lock            # file lock for concurrent access
   portal.config.toml     # optional configuration
@@ -367,13 +412,17 @@ reinstall_timeout_secs = 30
 
 - [x] `save` with interactive prompts, save-game overwrite, dry-run
 - [x] `load` with atomic swap, backup, plugin reinstall
+- [x] `toggle` to the previously active profile
 - [x] `list`, `show`, `diff`, `rm`, `reset`, `undo`
 - [x] `status` with integrity check and plugin health
 - [x] `rename` with state update
 - [x] `verify` with `--fix-plugins`
 - [x] `export` / `import`
 - [x] `recover`
+- [x] `doctor` with `--fix` guided repairs
+- [x] `history` (per-profile git commit log)
 - [x] `clone` with `--only`, `--without`, `--fresh-claude-md`
+- [x] `use` (bind-mode isolated session) with `--print-env`, `--no-refresh`
 - [x] Global flags: `--dry-run`, `--no-backup`, `--no-plugins`, `--force`, `-v`, `-q`
 
 ### TUI

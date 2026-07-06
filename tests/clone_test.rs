@@ -206,7 +206,10 @@ fn picker_group_key_collapses_nested_dirs() {
     use clone::picker_group_key;
     // Nested skill files collapse to the skill directory.
     assert_eq!(picker_group_key("skills/foo/SKILL.md"), "skills/foo");
-    assert_eq!(picker_group_key("skills/foo/references/bar.md"), "skills/foo");
+    assert_eq!(
+        picker_group_key("skills/foo/references/bar.md"),
+        "skills/foo"
+    );
     assert_eq!(picker_group_key("agents/team/lead.md"), "agents/team");
     // Flat entries are unchanged.
     assert_eq!(picker_group_key("rules/security.md"), "rules/security.md");
